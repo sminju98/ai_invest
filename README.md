@@ -87,6 +87,49 @@ git push -u origin main
 
 > Vercel에서는 `vercel.json`의 rewrite로 `/`가 `public/index.html`을 서빙하고, 서버리스 함수는 `/api/*`로 동작합니다.
 
+## Firebase Hosting + Functions 배포
+
+이 프로젝트는 Firebase로도 배포할 수 있습니다:
+
+- **Hosting**: `public/` 정적 파일 서빙
+- **Functions**: `functions/server.mjs`(루트 `server.mjs`에서 복사) 기반으로 `/api/*` 라우팅 처리
+
+### 1) Firebase 프로젝트 ID 설정
+
+`.firebaserc`의 `"default"`를 본인 Firebase 프로젝트 ID로 바꾸거나, CLI에서 지정하세요:
+
+```bash
+npx firebase use --add your-firebase-project-id
+```
+
+### 2) (권장) Functions Secrets 설정
+
+이 프로젝트는 `process.env.*`를 읽습니다. Firebase Functions v2에서는 secrets를 등록/바인딩해서 사용하세요.
+
+```bash
+npx firebase functions:secrets:set OPENAI_API_KEY
+npx firebase functions:secrets:set PERPLEXITY_API_KEY
+npx firebase functions:secrets:set GEMINI_API_KEY
+```
+
+> `functions/index.js`에 secrets 바인딩이 이미 포함되어 있습니다.
+
+### 3) 배포
+
+```bash
+npx firebase deploy --only hosting,functions
+```
+
+### 4) CI 토큰으로 배포(선택)
+
+로컬 로그인 없이 배포해야 하면 토큰을 사용합니다:
+
+```bash
+npx firebase login:ci
+# 출력된 토큰을 FIREBASE_TOKEN으로 사용
+npx firebase deploy --only hosting,functions --token "$FIREBASE_TOKEN" --project "your-firebase-project-id"
+```
+
 ## 가상(페이퍼) 주문 API
 
 이 프로젝트의 “주문” 기능은 **실계좌 주문이 아닌 가상 주문(페이퍼)** 입니다.

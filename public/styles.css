@@ -1,0 +1,761 @@
+:root {
+  --bg: #0b0b0c;
+  --panel: #111114;
+  --panel2: #0f0f12;
+  --text: #e9e9ee;
+  --muted: #a9a9b6;
+  --border: rgba(255, 255, 255, 0.08);
+  --accent: #6aa8ff;
+  --danger: #ff6a6a;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple SD Gothic Neo",
+    "Noto Sans KR", "Malgun Gothic", sans-serif;
+}
+
+.topbar {
+  height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0));
+}
+
+.topActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+/* Login page */
+.authPage {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+.authCard {
+  width: 100%;
+  max-width: 520px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+  padding: 18px;
+}
+.authHeader {
+  margin-bottom: 14px;
+}
+.authTitle {
+  font-weight: 850;
+  letter-spacing: -0.2px;
+  font-size: 18px;
+}
+.authSub {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.authTabs {
+  display: inline-flex;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 14px;
+  margin-bottom: 12px;
+}
+.authTab {
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.authTab.is-active {
+  border-color: rgba(106, 168, 255, 0.55);
+  background: rgba(106, 168, 255, 0.14);
+  color: var(--text);
+}
+.authLabel {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.authActions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+.authFooter {
+  margin-top: 14px;
+}
+.authLink {
+  color: var(--muted);
+  text-decoration: none;
+}
+.authLink:hover {
+  text-decoration: underline;
+}
+.authSignedIn .authUser {
+  margin-top: 6px;
+  color: var(--text);
+  font-size: 13px;
+  word-break: break-word;
+}
+
+.brand__line {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+
+.brand__title {
+  font-weight: 750;
+  letter-spacing: -0.2px;
+}
+.brand__meta {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 920px;
+}
+
+.controls {
+  display: flex;
+  gap: 10px;
+  align-items: end;
+}
+.controls--left {
+  align-items: end;
+}
+.controls--left .control input,
+.controls--left .control select {
+  width: 150px;
+}
+
+.symbolField {
+  position: relative;
+}
+.symbolPicker {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 320px;
+  max-width: 74vw;
+  max-height: 360px;
+  overflow: auto;
+  background: #0f0f12;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 6px;
+  z-index: 50;
+}
+.symbolPicker__item {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  gap: 10px;
+  padding: 10px 10px;
+  border-radius: 12px;
+  cursor: pointer;
+}
+.symbolPicker__item:hover,
+.symbolPicker__item.is-active {
+  background: rgba(106, 168, 255, 0.12);
+}
+.symbolPicker__ticker {
+  font-weight: 800;
+  letter-spacing: -0.2px;
+}
+.symbolPicker__name {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.25;
+}
+.symbolPicker__empty {
+  padding: 10px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.control {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.control input,
+.control select {
+  width: 160px;
+  height: 34px;
+  padding: 0 10px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  outline: none;
+}
+.control input:focus,
+.control select:focus {
+  border-color: rgba(106, 168, 255, 0.6);
+  box-shadow: 0 0 0 3px rgba(106, 168, 255, 0.12);
+}
+
+.layout {
+  height: calc(100% - 60px);
+  display: grid;
+  /* 왼쪽(차트/스크리너) 확보를 위해 채팅 패널 폭을 줄이고 고정에 가깝게 */
+  grid-template-columns: minmax(860px, 1fr) 340px;
+  gap: 12px;
+  padding: 12px;
+}
+
+@media (max-width: 980px) {
+  .layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1.1fr 1fr;
+  }
+  .control input,
+  .control select {
+    width: 140px;
+  }
+}
+
+.pane {
+  min-height: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+}
+
+.pane__head {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel2);
+}
+.pane__headRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.topDisclaimer {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: right;
+  max-width: 360px;
+  line-height: 1.25;
+}
+.pane__title {
+  font-weight: 700;
+}
+.pane__meta {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.pane__body {
+  min-height: 0;
+  flex: 1;
+}
+
+.pane__body--assistant {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.messages {
+  /* 채팅 로그(상단)는 줄이고, 입력 영역(하단)을 더 크게 */
+  flex: 0 0 66%;
+  min-height: 0;
+  overflow: auto;
+  overflow-x: hidden; /* 가로 스크롤 제거 */
+  scrollbar-width: none; /* Firefox: 스크롤바 숨김 */
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+.messages::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.msg {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  margin-bottom: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.msg__role {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.msg__content {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere; /* 긴 JSON/URL도 줄바꿈 */
+  word-break: break-word;
+  line-height: 1.45;
+}
+.msg--assistant {
+  border-color: rgba(106, 168, 255, 0.28);
+}
+.msg--error {
+  border-color: rgba(255, 106, 106, 0.35);
+  background: rgba(255, 106, 106, 0.08);
+}
+
+.chatComposer {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+  display: grid;
+  gap: 10px;
+}
+
+/* chatMeta(야후 상태/마지막 갱신 배지)는 UI 단순화를 위해 제거됨 */
+
+.chatInput {
+  resize: none;
+  /* 입력칸을 체감상 2배 정도 키움 */
+  min-height: 165px;
+  max-height: 352px;
+  overflow: auto; /* 입력칸 내부 스크롤 */
+  padding: 10px 10px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  outline: none;
+}
+.chatInput:focus {
+  border-color: rgba(106, 168, 255, 0.6);
+  box-shadow: 0 0 0 3px rgba(106, 168, 255, 0.12);
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.orderActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: nowrap; /* 두 버튼은 같은 줄 유지 */
+  white-space: nowrap;
+}
+
+.btn {
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(106, 168, 255, 0.55);
+  background: rgba(106, 168, 255, 0.18);
+  color: var(--text);
+  cursor: pointer;
+}
+.btn:hover {
+  background: rgba(106, 168, 255, 0.25);
+}
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.btn--ghost {
+  border-color: var(--border);
+  background: rgba(255, 255, 255, 0.03);
+}
+.btn--ghost:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.disclaimer {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.orderBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.orderBar__left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.orderBar__right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.orderBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(106, 168, 255, 0.55);
+  background: rgba(106, 168, 255, 0.12);
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.orderHint {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Modal */
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+}
+.modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+}
+.modal__panel {
+  position: relative;
+  width: min(640px, 92vw);
+  max-height: min(78vh, 720px);
+  margin: 10vh auto 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.modal__head {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel2);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.modal__title {
+  font-weight: 800;
+}
+.modal__body {
+  padding: 12px 14px;
+  overflow: auto;
+  min-height: 0;
+}
+.modal__label {
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.modal__pre {
+  margin: 0;
+  padding: 10px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.modal__note {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.modal__input,
+.modal__textarea {
+  width: 100%;
+  padding: 10px 10px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  outline: none;
+}
+.modal__textarea {
+  resize: vertical;
+  min-height: 120px;
+  max-height: 360px;
+  overflow: auto;
+}
+.modal__input:focus,
+.modal__textarea:focus {
+  border-color: rgba(106, 168, 255, 0.6);
+  box-shadow: 0 0 0 3px rgba(106, 168, 255, 0.12);
+}
+.modal__actions {
+  padding: 12px 14px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* TradingView embed tweaks */
+.tradingview-widget-container {
+  height: 100%;
+  width: 100%;
+}
+.tradingview-widget-container__widget {
+  height: calc(100% - 32px);
+  width: 100%;
+}
+.tradingview-widget-copyright {
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+.tradingview-widget-copyright a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.03);
+}
+.segmented__btn {
+  height: 34px;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.segmented__btn.is-active {
+  color: var(--text);
+  background: rgba(106, 168, 255, 0.16);
+}
+.segmented__btn:focus {
+  outline: none;
+}
+
+.leftPaneHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.leftHeadControls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap; /* 버튼/탭이 잘리지 않게 줄바꿈 허용 */
+  justify-content: flex-end;
+}
+
+.btn--compact {
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 12px;
+}
+
+.leftWidgetRoot {
+  height: 100%;
+  width: 100%;
+}
+
+.companyStrip {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  overflow: auto;
+}
+.companyPanel {
+  flex: 0 0 400px;
+  min-width: 400px;
+  height: 100%;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.macroGrid {
+  height: 100%;
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 12px;
+  overflow: hidden;
+}
+.macroPanel {
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.02);
+  display: flex;
+  flex-direction: column;
+}
+.macroPanel__head {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.macroPanel__title {
+  font-weight: 700;
+}
+.macroPanel__body {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 10px 12px;
+}
+.macroPanel--span {
+  grid-column: 1 / -1;
+}
+.macroInsight {
+  white-space: pre-wrap;
+  line-height: 1.45;
+  font-size: 13px;
+}
+.macroTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.macroTable th,
+.macroTable td {
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+.macroTable th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 12px;
+}
+.macroPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  font-size: 12px;
+}
+.macroNewsItem {
+  display: grid;
+  gap: 4px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.macroNewsItem a {
+  color: var(--text);
+  text-decoration: none;
+}
+.macroNewsItem a:hover {
+  text-decoration: underline;
+}
+.macroNewsMeta {
+  font-size: 12px;
+  color: var(--muted);
+}
+.pos {
+  color: #6affb1;
+}
+.neg {
+  color: var(--danger);
+}
+
+.screenerSplit {
+  height: 100%;
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr 400px;
+  gap: 12px;
+  padding: 12px;
+}
+.screenerSplit--collapsed {
+  grid-template-columns: 1fr; /* 캘린더 접으면 스크리너가 전체 폭 */
+}
+.screenerSplit__left,
+.screenerSplit__right {
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+@media (max-width: 980px) {
+  .screenerSplit {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr 550px;
+  }
+  .macroGrid {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr 1fr;
+  }
+}
+
+

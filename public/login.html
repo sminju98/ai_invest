@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>로그인 · GOYO AI Invest</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="authPage">
+      <div class="authCard">
+        <div class="authHeader">
+          <div class="authTitle">GOYO AI Invest</div>
+          <div class="authSub">
+            본 서비스는 정보 제공 및 이해 보조 목적의 AI 시스템이며, 투자 권유 또는 재무 자문을 제공하지 않습니다.
+          </div>
+        </div>
+
+        <div id="authSignedIn" class="authSignedIn" style="display:none;">
+          <div class="authLabel">로그인됨</div>
+          <div id="authUser" class="authUser">-</div>
+          <div class="authActions">
+            <button id="goNext" class="btn" type="button">계속하기</button>
+            <button id="logout" class="btn btn--ghost" type="button">로그아웃</button>
+          </div>
+        </div>
+
+        <div id="authForms" class="authForms">
+          <div class="authTabs" role="tablist" aria-label="인증 방식">
+            <button id="tabLogin" class="authTab is-active" type="button" role="tab" aria-selected="true">로그인</button>
+            <button id="tabSignup" class="authTab" type="button" role="tab" aria-selected="false">회원가입</button>
+          </div>
+
+          <div class="authPanel">
+            <div class="authLabel">이메일</div>
+            <input id="email" class="modal__input" placeholder="you@example.com" autocomplete="email" />
+            <div class="authLabel" style="margin-top:10px;">비밀번호</div>
+            <input id="password" class="modal__input" type="password" placeholder="비밀번호" autocomplete="current-password" />
+
+            <div id="pw2Wrap" style="display:none;">
+              <div class="authLabel" style="margin-top:10px;">비밀번호 확인</div>
+              <input id="password2" class="modal__input" type="password" placeholder="비밀번호 확인" autocomplete="new-password" />
+            </div>
+
+            <div id="authHint" class="modal__note">이메일/비밀번호 또는 Google로 로그인할 수 있습니다.</div>
+
+            <div class="authActions">
+              <button id="google" class="btn btn--ghost" type="button">Google로 로그인</button>
+              <button id="submit" class="btn" type="button">로그인</button>
+            </div>
+
+            <div class="authFooter">
+              <a class="authLink" href="/" id="backHome">← 홈으로</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Firebase config + SDK -->
+    <script src="/firebase-config.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-analytics-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+    <script src="/login.js"></script>
+  </body>
+</html>
+
+

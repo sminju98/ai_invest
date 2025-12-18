@@ -1,0 +1,21 @@
+{
+  "name": "tradingview-llm-commentary",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs",
+    "import:ticker_master": "node scripts/import_us_stock_symbols.mjs",
+    "firebase:emulators": "npx firebase emulators:start --only hosting,functions",
+    "firebase:deploy": "npx firebase deploy"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.7.0"
+  },
+  "devDependencies": {
+    "firebase-tools": "^13.35.1"
+  }
+}
+
+
+

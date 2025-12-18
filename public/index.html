@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>GOYO AI Invest</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand__line">
+          <div class="brand__title">GOYO AI Invest</div>
+          <div class="brand__meta">
+            본 서비스는 금융 데이터를 제공하거나 투자 판단을 하지 않으며, 공개 웹 정보를 탐색·요약하는 도구입니다. · 야후 OHLCV 자동 갱신(30초)을 기반으로 해설합니다. (실시간 보장 X)
+          </div>
+        </div>
+      </div>
+      <div class="topActions">
+        <button id="portfolioBtn" class="btn btn--ghost btn--compact" type="button">포트폴리오</button>
+        <button id="mypageBtn" class="btn btn--ghost btn--compact" type="button" disabled>마이페이지</button>
+        <button id="authPageBtn" class="btn btn--ghost btn--compact" type="button">로그인/회원가입</button>
+        <button id="logoutBtn" class="btn btn--ghost btn--compact" type="button" style="display:none;">로그아웃</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="pane pane--chart" aria-label="차트">
+        <div class="pane__head">
+          <div class="leftPaneHead">
+            <div>
+              <div class="pane__title">미국 증권 시장 데이터</div>
+              <div class="pane__meta">매크로 / 스크리너 / 차트 / 기업분석</div>
+            </div>
+            <div class="leftHeadControls">
+              <button id="toggleCalendar" class="btn btn--ghost btn--compact" type="button" style="display:none;">캘린더</button>
+              <div id="leftControls" class="controls controls--left" style="display:none;">
+                <label class="control">
+                  <span>심볼</span>
+                  <div class="symbolField">
+                    <input id="symbol" value="NASDAQ:AAPL" placeholder="예: NASDAQ:AAPL" autocomplete="off" />
+                    <div id="symbolPicker" class="symbolPicker" style="display:none;"></div>
+                  </div>
+                </label>
+                <label class="control">
+                  <span>간격</span>
+                  <select id="interval">
+                    <option value="1">1m</option>
+                    <option value="5">5m</option>
+                    <option value="15">15m</option>
+                    <option value="60">1h</option>
+                    <option value="240">4h</option>
+                    <option value="D" selected>1D</option>
+                    <option value="W">1W</option>
+                    <option value="M">1M</option>
+                  </select>
+                </label>
+                <button id="reloadChart" class="btn btn--ghost btn--compact" type="button">새로고침</button>
+              </div>
+              <div class="segmented" role="tablist" aria-label="왼쪽 화면 선택">
+                <button id="viewMacro" class="segmented__btn is-active" type="button" role="tab" aria-selected="true">매크로</button>
+                <button id="viewScreener" class="segmented__btn" type="button" role="tab" aria-selected="false">스크리너</button>
+                <button id="viewChart" class="segmented__btn" type="button" role="tab" aria-selected="false">차트</button>
+                <button id="viewCompany" class="segmented__btn" type="button" role="tab" aria-selected="false">기업분석</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="pane__body">
+          <div id="leftWidgetRoot" class="leftWidgetRoot"></div>
+        </div>
+      </section>
+
+      <section class="pane pane--assistant" aria-label="해설">
+        <div class="pane__head">
+          <div class="pane__title">채팅</div>
+        </div>
+        <div class="pane__body pane__body--assistant">
+          <div id="messages" class="messages" role="log" aria-live="polite"></div>
+
+          <div class="chatComposer">
+            <textarea
+              id="question"
+              class="chatInput"
+              rows="3"
+              placeholder="질문을 입력하세요. 예: 현재 구도/시나리오/확인 신호를 구조적으로 해설해줘."
+            ></textarea>
+
+            <div class="actions">
+              <button id="ask" class="btn" type="button">전송</button>
+              <button id="judge" class="btn btn--ghost" type="button">종합 판단</button>
+              <div class="orderActions">
+                <button id="orderMode" class="btn btn--ghost" type="button">주식 주문(가상)</button>
+                <button id="orderExecute" class="btn" type="button" disabled style="display:none;">가상 주문 실행</button>
+              </div>
+            </div>
+
+            <div id="orderBar" class="orderBar" style="display:none;">
+              <div class="orderBar__left">
+                <span class="orderBadge">가상 주문 모드</span>
+              </div>
+              <div class="orderBar__right">
+                <button id="orderCancel" class="btn btn--ghost" type="button">취소</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Order confirm modal -->
+    <div id="orderConfirmModal" class="modal" style="display:none;">
+      <div class="modal__backdrop" data-modal-close="1"></div>
+      <div class="modal__panel" role="dialog" aria-modal="true" aria-labelledby="orderConfirmTitle">
+        <div class="modal__head">
+          <div id="orderConfirmTitle" class="modal__title">주문 확인</div>
+          <button id="orderConfirmClose" class="btn btn--ghost btn--compact" type="button">닫기</button>
+        </div>
+        <div class="modal__body">
+          <div class="modal__label">[주문내용] 주문이 맞으십니까?</div>
+          <pre id="orderConfirmText" class="modal__pre"></pre>
+          <div class="modal__note">가상 주문(페이퍼)입니다. 실제 증권사 주문이 전송되지 않습니다.</div>
+        </div>
+        <div class="modal__actions">
+          <button id="orderConfirmNo" class="btn btn--ghost" type="button">취소</button>
+          <button id="orderConfirmYes" class="btn" type="button">확인 후 실행</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Firebase config + SDK (optional) -->
+    <script src="/firebase-config.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-analytics-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>
+
+

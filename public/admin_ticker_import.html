@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>티커 마스터 적재(관리자) · GOYO AI Invest</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="authPage">
+      <div class="authCard" style="max-width: 980px;">
+        <div class="authHeader">
+          <div class="authTitle">티커 마스터 적재(관리자)</div>
+          <div class="authSub">
+            NASDAQ/NYSE/AMEX 전종목 티커/영문명을 Firestore <code>ticker_master</code>에 벌크 적재합니다.
+            (권한/쿼터에 따라 시간이 걸릴 수 있습니다)
+          </div>
+        </div>
+
+        <div class="authActions" style="justify-content: space-between;">
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <a class="authLink" href="/mypage.html">← 마이페이지</a>
+            <span id="userBadge" class="modal__note">-</span>
+          </div>
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <button id="logout" class="btn btn--ghost" type="button">로그아웃</button>
+          </div>
+        </div>
+
+        <div style="margin-top:12px; border-top:1px solid var(--border); padding-top:12px;">
+          <div class="modal__label">설정</div>
+          <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:6px;">
+            <label class="modal__note" style="display:flex; gap:8px; align-items:center;">
+              Limit
+              <input id="limit" class="modal__input" style="width:120px;" type="number" min="0" value="5000" />
+            </label>
+            <label class="modal__note" style="display:flex; gap:8px; align-items:center;">
+              <input id="resume" type="checkbox" checked />
+              resume(진행상황 저장)
+            </label>
+            <label class="modal__note" style="display:flex; gap:8px; align-items:center;">
+              <input id="enrich" type="checkbox" />
+              GPT로 한글명/별칭 보강(느림/비용)
+            </label>
+            <label class="modal__note" style="display:flex; gap:8px; align-items:center;">
+              <input id="enrichOnlyMissing" type="checkbox" checked />
+              보강은 미보강(name_ko="")만
+            </label>
+            <label class="modal__note" style="display:flex; gap:8px; align-items:center;">
+              throttle(ms)
+              <input id="throttle" class="modal__input" style="width:120px;" type="number" min="0" value="750" />
+            </label>
+          </div>
+
+          <div class="authActions" style="margin-top:10px;">
+            <button id="start" class="btn" type="button">적재 시작</button>
+            <button id="enrichStart" class="btn btn--ghost" type="button">보강만 시작</button>
+            <button id="stop" class="btn btn--ghost" type="button" disabled>중지</button>
+            <button id="reset" class="btn btn--ghost" type="button">커서 초기화</button>
+          </div>
+
+          <div class="modal__label" style="margin-top:16px;">상태</div>
+          <div id="status" class="modal__note" style="white-space:pre-wrap;">대기 중…</div>
+          <div id="log" class="modal__note" style="white-space:pre-wrap; max-height: 260px; overflow:auto; border:1px solid var(--border); padding:10px; margin-top:8px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <script src="/firebase-config.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-analytics-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+    <script src="/admin_ticker_import.js"></script>
+  </body>
+</html>
+
+

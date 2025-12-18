@@ -1,0 +1,13 @@
+{
+  "name": "goyo-ai-invest-functions",
+  "private": true,
+  "main": "index.js",
+  "engines": {
+    "node": "18"
+  },
+  "dependencies": {
+    "firebase-functions": "^4.7.0"
+  }
+}
+
+

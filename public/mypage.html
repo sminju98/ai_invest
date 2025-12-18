@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>마이페이지 · GOYO AI Invest</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="authPage">
+      <div class="authCard" style="max-width: 1080px;">
+        <div class="authHeader">
+          <div class="authTitle">마이페이지</div>
+          <div class="authSub">계정/포트폴리오/기록 저장 설정을 관리합니다.</div>
+        </div>
+
+        <div class="authActions" style="justify-content: space-between;">
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <a class="authLink" href="/">← 홈</a>
+            <span id="userBadge" class="modal__note">-</span>
+          </div>
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <button id="logout" class="btn btn--ghost" type="button">로그아웃</button>
+          </div>
+        </div>
+
+        <div style="margin-top:12px; border-top:1px solid var(--border); padding-top:12px;">
+          <div class="modal__label">기록 저장</div>
+          <label class="modal__note" style="display:flex; gap:10px; align-items:center; margin-top:6px;">
+            <input id="cloudSave" type="checkbox" />
+            채팅/생성 결과(종합 판단/Market Insight)를 계정 DB(Firestore)에 저장
+          </label>
+          <div class="authActions">
+            <button id="restoreLatest" class="btn btn--ghost" type="button">최신 세션 자동 복원</button>
+            <button id="restoreCurrent" class="btn btn--ghost" type="button">현재 세션 복원</button>
+          </div>
+
+          <div class="modal__label" style="margin-top:12px;">채팅 세션 구분</div>
+          <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:6px;">
+            <select id="sessionMode" class="modal__input" style="max-width:260px;">
+              <option value="day">하루 기준</option>
+              <option value="day_symbol" selected>하루 + 종목 기준</option>
+              <option value="symbol">종목 기준</option>
+              <option value="topic">주제 기준(직접 입력)</option>
+            </select>
+            <button id="newSession" class="btn btn--ghost" type="button">새 세션 시작</button>
+          </div>
+          <div id="sessionMeta" class="modal__note">-</div>
+
+          <div class="modal__label" style="margin-top:16px;">포트폴리오</div>
+          <div class="authActions">
+            <button id="goPortfolioInput" class="btn btn--ghost" type="button">포트폴리오 입력(사진 업로드)</button>
+            <button id="refreshPortfolio" class="btn btn--ghost" type="button">포트폴리오 새로고침</button>
+            <button id="refreshQuotes" class="btn btn--ghost" type="button">실시간 시세 새로고침</button>
+          </div>
+          <div id="portfolioTable" class="modal__note" style="margin-top:8px;">불러오는 중…</div>
+
+          <div class="modal__label" style="margin-top:16px;">포트폴리오 분석(이해 보조)</div>
+          <div class="authActions">
+            <button id="runPortfolioAnalysis" class="btn btn--ghost" type="button">분석 생성</button>
+            <button id="stopPortfolioAnalysis" class="btn btn--ghost" type="button" disabled>중지</button>
+          </div>
+          <div id="portfolioAnalysisStatus" class="modal__note" style="margin-top:6px;">-</div>
+          <div id="portfolioAnalysisOut" class="modal__note" style="margin-top:8px; white-space:pre-wrap;">-</div>
+
+          <div class="modal__label" style="margin-top:16px;">포트폴리오 메모(텍스트)</div>
+          <textarea id="portfolioText" class="modal__textarea" rows="8" placeholder="예:\nAAPL 10\nTSLA 2\nSPY 5"></textarea>
+          <div class="authActions">
+            <button id="loadMemo" class="btn btn--ghost" type="button">불러오기</button>
+            <button id="saveMemo" class="btn" type="button">저장</button>
+          </div>
+
+          <div id="hint" class="modal__note" style="margin-top:10px;">대기 중…</div>
+
+          <div class="modal__label" style="margin-top:16px;">관리</div>
+          <div class="authActions">
+            <a class="authLink" href="/admin_ticker_import.html">티커 마스터 적재(관리자)</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="/firebase-config.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-analytics-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+    <script src="/mypage.js"></script>
+  </body>
+</html>
+
+

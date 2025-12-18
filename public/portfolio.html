@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>포트폴리오 · GOYO AI Invest</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="authPage">
+      <div class="authCard" style="max-width: 980px;">
+        <div class="authHeader">
+          <div class="authTitle">포트폴리오</div>
+          <div class="authSub">
+            사진(증권앱/엑셀/메모 등)을 올리면 보유 종목/수량/매수가를 자동으로 인식해 구조화합니다. 투자 권유가 아닙니다.
+          </div>
+        </div>
+
+        <div class="authActions" style="justify-content: space-between;">
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <a class="authLink" href="/">← 홈</a>
+            <span id="userBadge" class="modal__note">-</span>
+          </div>
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <button id="logout" class="btn btn--ghost" type="button">로그아웃</button>
+          </div>
+        </div>
+
+        <div style="margin-top:12px; border-top:1px solid var(--border); padding-top:12px;">
+          <div class="modal__label">포트폴리오 신규 등록</div>
+          <div class="modal__note">PNG/JPEG 1장 이상 업로드하세요. (민감정보가 포함된 캡처는 가급적 가려주세요)</div>
+
+          <div class="authActions">
+            <input id="images" type="file" accept="image/*" multiple />
+            <button id="extract" class="btn" type="button">자동 인식</button>
+            <button id="save" class="btn btn--ghost" type="button" disabled>저장</button>
+            <button id="refreshQuotes" class="btn btn--ghost" type="button" disabled>실시간 시세 갱신</button>
+          </div>
+
+          <div id="hint" class="modal__note" style="margin-top:10px;">대기 중…</div>
+
+          <div id="thumbs" style="display:flex; gap:10px; flex-wrap:wrap; margin-top:10px;"></div>
+
+          <div style="margin-top:12px;">
+            <div class="modal__label">추출 결과(확인/수정 후 저장)</div>
+            <div class="modal__note">필수: 티커(symbol), 수량(qty). 선택: 매수가(avgPrice).</div>
+            <div id="tableWrap" style="margin-top:10px;"></div>
+          </div>
+
+          <div style="margin-top:12px;">
+            <div class="modal__label">현재 저장된 포트폴리오(클라우드)</div>
+            <div id="savedWrap" class="modal__note" style="margin-top:8px;">-</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Firebase config + SDK -->
+    <script src="/firebase-config.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+    <script src="/portfolio.js"></script>
+  </body>
+</html>
+
+

@@ -5,7 +5,14 @@ let handlerModulePromise = null;
 exports.api = onRequest(
   {
     region: "asia-northeast3",
-    cors: true
+    cors: true,
+    // Make secrets available via process.env.* in Cloud Functions v2
+    secrets: [
+      "OPENAI_API_KEY",
+      "PERPLEXITY_API_KEY",
+      "GEMINI_API_KEY",
+      "OPENAI_VISION_API_KEY"
+    ]
   },
   async (req, res) => {
     try {

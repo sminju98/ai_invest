@@ -3043,15 +3043,52 @@ async function startAiAnalysis() {
   
   let question = "";
   
-  // 매크로나 스크리너 뷰일 때는 추가 컨텍스트를 question에 포함
-  if (leftView === "macro") {
+  // AI 종합 분석 뷰일 때는 모든 데이터를 수집해야 함
+  if (leftView === "aiAnalysis") {
+    // 매크로 데이터 로드
+    if (!latestMacroIndices || !latestMacroNews || latestMacroIndices.length === 0 || latestMacroNews.length === 0 || !lastMacroAt || Date.now() - lastMacroAt > 60_000) {
+      await loadMacro();
+    }
+    // 스크리너 데이터 로드
+    if (!latestScreenerText || !lastScreenerAt || Date.now() - lastScreenerAt > 35_000) {
+      await loadYahooScreener();
+    }
+    // 데이터 로드 확인
+    if ((!latestMacroIndices || latestMacroIndices.length === 0) && (!latestMacroNews || latestMacroNews.length === 0)) {
+      console.warn("매크로 데이터가 없습니다.", { latestMacroIndices, latestMacroNews });
+    }
+    if (!latestScreenerText || latestScreenerText.trim().length === 0) {
+      console.warn("스크리너 데이터가 없습니다.", { latestScreenerText });
+    }
+    question = ""; // AI 종합 분석은 question 없이 모든 데이터를 수집
+  } else if (leftView === "macro") {
+    // 매크로 데이터가 없거나 오래되었으면 먼저 로드
+    if (!latestMacroIndices || !latestMacroNews || latestMacroIndices.length === 0 || latestMacroNews.length === 0) {
+      await loadMacro();
+    }
     const macroData = {
       indices: latestMacroIndices || [],
       news: latestMacroNews || []
     };
+    if (macroData.indices.length === 0 && macroData.news.length === 0) {
+      addMessage("system", "매크로 데이터를 불러올 수 없습니다. 잠시 후 다시 시도해주세요.", "error");
+      return;
+    }
     question = `현재 매크로 환경을 분석해주세요. 시장 지표: ${JSON.stringify(macroData.indices).slice(0, 500)}... 주요 뉴스: ${JSON.stringify(macroData.news).slice(0, 500)}...`;
   } else if (leftView === "screener") {
+    // 스크리너 데이터가 없거나 오래되었으면 먼저 로드
+    if (!latestScreenerText || !lastScreenerAt || Date.now() - lastScreenerAt > 35_000) {
+      const loaded = await loadYahooScreener();
+      if (!loaded) {
+        addMessage("system", "스크리너 데이터를 불러올 수 없습니다. 잠시 후 다시 시도해주세요.", "error");
+        return;
+      }
+    }
     const screenerData = latestScreenerText || "";
+    if (!screenerData || screenerData.trim().length === 0) {
+      addMessage("system", "스크리너 데이터가 없습니다. 잠시 후 다시 시도해주세요.", "error");
+      return;
+    }
     question = `스크리너 데이터를 기반으로 시장 상황을 분석해주세요. 스크리너: ${screenerData.slice(0, 1000)}...`;
   }
   
@@ -3075,12 +3112,12 @@ async function startAiAnalysis() {
 
   // 카드 초기 상태 - 현재 뷰에 따라 적절한 카드 활성화
   const cardData = {
-    macro: { title: "매크로", status: leftView === "macro" ? "분석 중..." : "대기 중...", content: "", summary: "" },
-    screener: { title: "스크리너", status: leftView === "screener" ? "분석 중..." : "대기 중...", content: "", summary: "" },
+    macro: { title: "매크로", status: (leftView === "macro" || leftView === "aiAnalysis") ? "분석 중..." : "대기 중...", content: "", summary: "" },
+    screener: { title: "스크리너", status: (leftView === "screener" || leftView === "aiAnalysis") ? "분석 중..." : "대기 중...", content: "", summary: "" },
     chart: { title: "차트", status: (leftView === "chart" || leftView === "aiAnalysis") ? "분석 중..." : "대기 중...", content: "", summary: "" },
     company: { title: "기업분석", status: (leftView === "company" || leftView === "aiAnalysis") ? "분석 중..." : "대기 중...", content: "", summary: "" },
-    news: { title: "최근 이슈", status: "대기 중...", content: "", summary: "" },
-    peers: { title: "관련주", status: "대기 중...", content: "", summary: "" }
+    news: { title: "최근 이슈", status: leftView === "aiAnalysis" ? "분석 중..." : "대기 중...", content: "", summary: "" },
+    peers: { title: "관련주", status: leftView === "aiAnalysis" ? "분석 중..." : "대기 중...", content: "", summary: "" }
   };
 
   function renderCards() {
@@ -3109,10 +3146,18 @@ async function startAiAnalysis() {
   aiAnalysisAbortController = new AbortController();
 
   try {
+    // AI 종합 분석일 때는 매크로와 스크리너 데이터도 함께 전송
+    const payload = { symbol, question };
+    if (leftView === "aiAnalysis") {
+      payload.macroIndices = latestMacroIndices || [];
+      payload.macroNews = latestMacroNews || [];
+      payload.screener = latestScreenerText || "";
+    }
+    
     const resp = await fetch("/api/judge_stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ symbol, question }),
+      body: JSON.stringify(payload),
       signal: aiAnalysisAbortController.signal
     });
 
@@ -3154,8 +3199,12 @@ async function startAiAnalysis() {
           data = { raw: dataRaw };
         }
 
+        // 디버깅: 모든 이벤트 로그
+        console.log("AI 분석 이벤트:", eventName, data);
+
         if (eventName === "status") {
           const stage = String(data?.stage || "");
+          console.log("상태 단계:", stage);
           // 단계별로 카드 상태 업데이트
           if (stage === "collect") {
             cardData.macro.status = "분석 중...";
@@ -3166,11 +3215,22 @@ async function startAiAnalysis() {
             cardData.peers.status = "분석 중...";
             renderCards();
           } else if (stage === "signal_extract") {
+            console.log("신호 추출 단계 시작");
             cardData.macro.status = "분석 중...";
             cardData.screener.status = "분석 중...";
             cardData.chart.status = "분석 중...";
             cardData.company.status = "분석 중...";
             renderCards();
+          } else if (stage === "story_link") {
+            console.log("스토리 링크 단계");
+          } else if (stage === "market_check") {
+            console.log("시장 검증 단계");
+          } else if (stage === "peer_adjust") {
+            console.log("비교군 보정 단계");
+          } else if (stage === "final_judgement") {
+            console.log("최종 판단 단계");
+          } else if (stage === "verify") {
+            console.log("검증 단계");
           }
         } else if (eventName === "rag") {
           // RAG 데이터 수집 완료 - 각 파트별 데이터 요약 표시
@@ -3201,16 +3261,20 @@ async function startAiAnalysis() {
           }
           
           // 매크로와 스크리너 데이터 수집 확인
-          if (leftView === "macro") {
-            const hasMacro = docIds.some(id => id.includes("macro") || id.includes("indices") || id.includes("news"));
-            if (hasMacro || latestMacroIndices?.length) {
+          if (leftView === "macro" || leftView === "aiAnalysis") {
+            const hasMacroIndices = docIds.some(id => id.includes("macro/indices") || id.includes("macro_indices"));
+            const hasMacroNews = docIds.some(id => id.includes("macro/news") || id.includes("macro_news"));
+            const hasMacro = hasMacroIndices || hasMacroNews;
+            console.log("RAG 이벤트 - 매크로 확인:", { hasMacro, hasMacroIndices, hasMacroNews, docIds, latestMacroIndices: latestMacroIndices?.length });
+            if (hasMacro || (latestMacroIndices && latestMacroIndices.length > 0)) {
               cardData.macro.status = "완료";
               cardData.macro.content = `시장 지표 ${latestMacroIndices?.length || 0}개 수집 완료`;
             }
           }
-          if (leftView === "screener") {
-            const hasScreener = docIds.some(id => id.includes("screener"));
-            if (hasScreener || latestScreenerText) {
+          if (leftView === "screener" || leftView === "aiAnalysis") {
+            const hasScreener = docIds.some(id => (id.includes("screener/market") || id.includes("screener")) && !id.includes("company"));
+            console.log("RAG 이벤트 - 스크리너 확인:", { hasScreener, docIds, latestScreenerText: latestScreenerText?.length });
+            if (hasScreener || (latestScreenerText && latestScreenerText.trim().length > 0)) {
               cardData.screener.status = "완료";
               cardData.screener.content = "스크리너 데이터 수집 완료";
             }
@@ -3219,7 +3283,12 @@ async function startAiAnalysis() {
           renderCards();
         } else if (eventName === "signal") {
           // 신호 추출 결과를 파트별로 분류
+          console.log("신호 추출 완료:", data);
           const signals = data?.signals || {};
+          if (data?.error) {
+            console.error("신호 추출 에러:", data.error);
+            addMessage("system", `신호 추출 중 오류가 발생했습니다: ${data.error}`, "error");
+          }
           if (signals.market_signal) {
             cardData.chart.summary = signals.market_signal;
             cardData.chart.status = "완료";
@@ -3236,14 +3305,26 @@ async function startAiAnalysis() {
             cardData.peers.summary = signals.peer_signal;
             cardData.peers.status = "완료";
           }
-          // 매크로와 스크리너 신호가 있으면 표시
-          if (signals.macro_signal && leftView === "macro") {
-            cardData.macro.summary = signals.macro_signal;
-            cardData.macro.status = "완료";
+          // 매크로와 스크리너 신호 처리
+          if (leftView === "macro" || leftView === "aiAnalysis") {
+            if (signals.macro_signal && signals.macro_signal.trim().length > 0) {
+              cardData.macro.summary = signals.macro_signal;
+              cardData.macro.status = "완료";
+            } else if (cardData.macro.status === "분석 중..." && (latestMacroIndices?.length > 0 || latestMacroNews?.length > 0)) {
+              // 신호가 없어도 데이터가 수집되었다면 완료로 표시
+              cardData.macro.status = "완료";
+              cardData.macro.summary = "매크로 데이터 분석 완료 (신호 추출 없음)";
+            }
           }
-          if (signals.screener_signal && leftView === "screener") {
-            cardData.screener.summary = signals.screener_signal;
-            cardData.screener.status = "완료";
+          if (leftView === "screener" || leftView === "aiAnalysis") {
+            if (signals.screener_signal && signals.screener_signal.trim().length > 0) {
+              cardData.screener.summary = signals.screener_signal;
+              cardData.screener.status = "완료";
+            } else if (cardData.screener.status === "분석 중..." && latestScreenerText && latestScreenerText.trim().length > 0) {
+              // 신호가 없어도 데이터가 수집되었다면 완료로 표시
+              cardData.screener.status = "완료";
+              cardData.screener.summary = "스크리너 데이터 분석 완료 (신호 추출 없음)";
+            }
           }
           renderCards();
         } else if (eventName === "story") {
@@ -3275,7 +3356,17 @@ async function startAiAnalysis() {
           if (startBtn) startBtn.style.display = "inline-flex";
           if (stopBtn) stopBtn.style.display = "none";
         } else if (eventName === "error") {
-          addMessage("system", `오류: ${data?.error || "error"}\n${data?.details || ""}`.trim(), "error");
+          console.error("AI 분석 에러:", data);
+          const errorMsg = `오류: ${data?.error || "error"}\n${data?.details || ""}`.trim();
+          addMessage("system", errorMsg, "error");
+          // 모든 카드를 에러 상태로 표시
+          Object.keys(cardData).forEach(key => {
+            if (cardData[key].status === "분석 중...") {
+              cardData[key].status = "오류";
+              cardData[key].content = "분석 중 오류가 발생했습니다.";
+            }
+          });
+          renderCards();
           if (startBtn) startBtn.style.display = "inline-flex";
           if (stopBtn) stopBtn.style.display = "none";
         } else if (eventName === "done") {
@@ -3409,6 +3500,15 @@ async function askExplain() {
     setLeftView("macro", "채팅 키워드 감지");
   } else if (q.includes("차트") || q.includes("chart") || q.includes("캔들") || q.includes("봉")) {
     setLeftView("chart", "채팅 키워드 감지");
+  }
+
+  // 매크로 관련 질문이면(또는 현재 매크로 화면이면) 최신 매크로 데이터를 로드
+  if (leftView === "macro" || q.includes("매크로") || q.includes("macro") || q.includes("지수") || q.includes("인덱스") || q.includes("index") || q.includes("금리") || q.includes("cpi") || q.includes("fomc")) {
+    // 데이터가 없거나 오래되었으면 1회 갱신 시도
+    if (!latestMacroIndices || !latestMacroNews || latestMacroIndices.length === 0 || latestMacroNews.length === 0 || !lastMacroAt || Date.now() - lastMacroAt > 60_000) {
+      await loadMacro();
+      setYahooLast(new Date().toLocaleString());
+    }
   }
 
   // 스크리너 관련 질문이면(또는 현재 스크리너 화면이면) 최신 스크리너 rows를 LLM에 전달

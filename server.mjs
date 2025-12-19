@@ -1093,7 +1093,7 @@ function deriveMarketBehaviorFromCandles(candles) {
   };
 }
 
-function buildRagBundle({ symbolRaw, financials, news, ohlcv, peers }) {
+function buildRagBundle({ symbolRaw, financials, news, ohlcv, peers, macroIndices, macroNews, screener }) {
   const docs = [];
   const nowIso = new Date().toISOString();
 
@@ -1191,6 +1191,52 @@ function buildRagBundle({ symbolRaw, financials, news, ohlcv, peers }) {
       asOf: peers.asOf || nowIso,
       payload: { peers: peers.peers || [], quotes: peers.quotes || [] }
     });
+  }
+
+  // Macro indices doc
+  if (Array.isArray(macroIndices) && macroIndices.length > 0) {
+    docs.push({
+      doc_id: `macro/indices/current`,
+      symbol: "macro",
+      type: "macro_indices",
+      period: "current",
+      source: "yahoo",
+      asOf: nowIso,
+      payload: macroIndices
+    });
+  }
+
+  // Macro news doc
+  if (Array.isArray(macroNews) && macroNews.length > 0) {
+    docs.push({
+      doc_id: `macro/news/current`,
+      symbol: "macro",
+      type: "macro_news",
+      period: "current",
+      source: "yahoo",
+      asOf: nowIso,
+      payload: macroNews
+    });
+  }
+
+  // Screener doc
+  if (screener && screener.trim().length > 0) {
+    try {
+      const screenerData = JSON.parse(screener);
+      if (Array.isArray(screenerData) && screenerData.length > 0) {
+        docs.push({
+          doc_id: `screener/market/current`,
+          symbol: "screener",
+          type: "screener",
+          period: "current",
+          source: "yahoo",
+          asOf: nowIso,
+          payload: screenerData.slice(0, 50) // 최대 50개만
+        });
+      }
+    } catch {
+      // JSON 파싱 실패 시 무시
+    }
   }
 
   return {
@@ -1325,63 +1371,127 @@ async function fetchPeersBundle(symbolRaw) {
 }
 
 async function gptSignalExtraction({ symbolRaw, question, rag }) {
+  // RAG 문서에서 매크로와 스크리너 데이터 존재 여부 확인
+  const hasMacro = rag?.docs?.some(d => d.type === "macro_indices" || d.type === "macro_news");
+  const hasScreener = rag?.docs?.some(d => d.type === "screener");
+  
   const system = [
     "너는 '신호 추출(Signal Extraction)' 에이전트다.",
-    "입력으로 주어지는 RAG 문서(재무/이벤트/시장/비교)를 읽고, 사람이 인지할 만한 '신호'만 추출한다.",
+    "입력으로 주어지는 RAG 문서(재무/이벤트/시장/비교/매크로/스크리너)를 읽고, 사람이 인지할 만한 '신호'만 추출한다.",
+    "",
+    "데이터 유형:",
+    "- financial_signal: 재무제표, 기업 프로필, 밸류에이션 지표 관련 신호",
+    "- event_signal: 뉴스, 이벤트, 실적 발표 관련 신호",
+    "- market_signal: 차트, 시장 행동, 가격 움직임 관련 신호",
+    "- peer_signal: 관련주, 산업 비교 관련 신호",
+    hasMacro ? "- macro_signal: 매크로 경제 지표(지수, 통화, 원자재, 채권 등), 시장 전반 뉴스 관련 신호 (반드시 추출)" : "- macro_signal: 매크로 경제 지표 관련 신호 (데이터 없으면 빈 문자열)",
+    hasScreener ? "- screener_signal: 스크리너 데이터(시총 상위 종목 등)에서 발견된 시장 트렌드, 섹터/종목군 특징 관련 신호 (반드시 추출)" : "- screener_signal: 스크리너 데이터 관련 신호 (데이터 없으면 빈 문자열)",
     "",
     "규칙:",
     "- 단정 금지. 변화/대비/특이점은 '가능성이 있다/해석될 수 있다' 형태로 쓴다.",
     "- 투자 조언/매수·매도/목표가/수익 예측 금지.",
     "- 출력은 JSON만(설명/마크다운/코드펜스 금지).",
+    hasMacro ? "- RAG 문서에 macro_indices 또는 macro_news 타입 문서가 있으면, 반드시 macro_signal을 추출해야 한다." : "",
+    hasScreener ? "- RAG 문서에 screener 타입 문서가 있으면, 반드시 screener_signal을 추출해야 한다." : "",
     "",
-    "출력 포맷(키 고정):",
+    "출력 포맷(키 고정, 반드시 유효한 JSON만 출력):",
     "{",
     "  \"financial_signal\": \"...\",",
     "  \"event_signal\": \"...\",",
     "  \"market_signal\": \"...\",",
-    "  \"peer_signal\": \"...\"",
-    "}"
-  ].join("\n");
+    "  \"peer_signal\": \"...\",",
+    "  \"macro_signal\": \"...\",",
+    "  \"screener_signal\": \"...\"",
+    "}",
+    "",
+    "중요:",
+    "- 반드시 유효한 JSON 형식만 출력 (설명, 마크다운, 코드블록 없이)",
+    "- 모든 키는 반드시 포함되어야 함 (값이 없으면 빈 문자열 \"\")",
+    "- JSON 외의 텍스트는 절대 포함하지 말 것"
+  ].filter(Boolean).join("\n");
 
   const user = [
     `대상: ${symbolRaw}`,
     `질문(옵션): ${String(question || "").slice(0, 800)}`,
     "",
     "RAG 문서(요약/정규화):",
-    safeJsonForPrompt(rag, 120_000)
-  ].join("\n");
+    safeJsonForPrompt(rag, 120_000),
+    "",
+    hasMacro ? "주의: RAG 문서에 매크로 경제 지표(macro_indices) 또는 매크로 뉴스(macro_news) 데이터가 포함되어 있습니다. 이 데이터를 분석하여 macro_signal을 반드시 추출해야 합니다." : "",
+    hasScreener ? "주의: RAG 문서에 스크리너(screener) 데이터가 포함되어 있습니다. 이 데이터를 분석하여 screener_signal을 반드시 추출해야 합니다." : ""
+  ].filter(Boolean).join("\n");
 
+  // JSON 모드는 일부 모델에서만 지원 (gpt-4o, gpt-4-turbo 등)
+  // 하지만 안정성을 위해 일단 비활성화 (필요시 활성화)
+  const supportsJsonMode = false; // OPENAI_MODEL.includes("gpt-4o") || OPENAI_MODEL.includes("gpt-4-turbo") || OPENAI_MODEL.includes("o1");
+  const requestBody = {
+    model: OPENAI_MODEL,
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user }
+    ],
+    temperature: 0.2,
+    max_completion_tokens: 1000
+  };
+  if (supportsJsonMode) {
+    requestBody.response_format = { type: "json_object" };
+  }
+  
   const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
     method: "POST",
     headers: { "Authorization": `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: OPENAI_MODEL,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user }
-      ],
-      temperature: 0.2,
-      max_completion_tokens: 700
-    })
+    body: JSON.stringify(requestBody)
   });
   if (!resp.ok) {
     const errText = await resp.text().catch(() => "");
-    throw new Error(`GPT signal extraction failed: ${resp.status} ${errText.slice(0, 500)}`);
+    const errorMsg = `GPT signal extraction failed: ${resp.status} ${errText.slice(0, 500)}`;
+    console.error("신호 추출 API 에러:", errorMsg);
+    throw new Error(errorMsg);
   }
-  const data = await resp.json();
+  let data;
+  try {
+    data = await resp.json();
+  } catch (e) {
+    const text = await resp.text().catch(() => "");
+    console.error("신호 추출 응답 파싱 실패:", text.slice(0, 500));
+    throw new Error(`GPT signal extraction response parse failed: ${e?.message || e}`);
+  }
   const text = extractAssistantTextFromChatCompletions(data);
+  console.log("신호 추출 원본 텍스트:", text.slice(0, 500));
   const json = extractJsonObject(text);
   
   // JSON 파싱 실패 시 기본값 반환 (폴백)
   if (!json) {
-    console.warn("Signal extraction JSON parse failed, using fallback. Text:", text.slice(0, 200));
+    console.warn("Signal extraction JSON parse failed, using fallback. Text:", text.slice(0, 500));
+    console.warn("원본 텍스트:", text);
     // 텍스트에서 키워드로 신호 추출 시도
     const lowerText = text.toLowerCase();
+    // JSON 형식으로 시도해보기
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]);
+        if (parsed && typeof parsed === "object") {
+          return {
+            financial_signal: String(parsed.financial_signal || ""),
+            event_signal: String(parsed.event_signal || ""),
+            market_signal: String(parsed.market_signal || ""),
+            peer_signal: String(parsed.peer_signal || ""),
+            macro_signal: String(parsed.macro_signal || ""),
+            screener_signal: String(parsed.screener_signal || "")
+          };
+        }
+      } catch (e) {
+        console.warn("JSON 재파싱 실패:", e);
+      }
+    }
     return {
       financial_signal: lowerText.includes("재무") || lowerText.includes("financial") ? text.slice(0, 300) : "",
       event_signal: lowerText.includes("이벤트") || lowerText.includes("event") || lowerText.includes("뉴스") || lowerText.includes("news") ? text.slice(0, 300) : "",
       market_signal: lowerText.includes("시장") || lowerText.includes("market") || lowerText.includes("차트") || lowerText.includes("chart") ? text.slice(0, 300) : "",
-      peer_signal: lowerText.includes("비교") || lowerText.includes("peer") || lowerText.includes("관련주") ? text.slice(0, 300) : ""
+      peer_signal: lowerText.includes("비교") || lowerText.includes("peer") || lowerText.includes("관련주") ? text.slice(0, 300) : "",
+      macro_signal: lowerText.includes("매크로") || lowerText.includes("macro") || lowerText.includes("지수") || lowerText.includes("인덱스") || lowerText.includes("index") ? text.slice(0, 300) : "",
+      screener_signal: lowerText.includes("스크리너") || lowerText.includes("screener") ? text.slice(0, 300) : ""
     };
   }
   
@@ -1389,7 +1499,9 @@ async function gptSignalExtraction({ symbolRaw, question, rag }) {
     financial_signal: String(json.financial_signal || ""),
     event_signal: String(json.event_signal || ""),
     market_signal: String(json.market_signal || ""),
-    peer_signal: String(json.peer_signal || "")
+    peer_signal: String(json.peer_signal || ""),
+    macro_signal: String(json.macro_signal || ""),
+    screener_signal: String(json.screener_signal || "")
   };
 }
 
@@ -1520,9 +1632,21 @@ async function gptPeerAdjustment({ symbolRaw, signals, story }) {
 }
 
 async function gptFinalJudgement({ symbolRaw, signals, story, marketCheck, peerAdjust, rag, feedback }) {
+  // 매크로와 스크리너 신호 존재 여부 확인
+  const hasMacroSignal = signals?.macro_signal && signals.macro_signal.trim().length > 0;
+  const hasScreenerSignal = signals?.screener_signal && signals.screener_signal.trim().length > 0;
+  
   const system = [
     "너는 '조건부 종합 판단(Final Judgement)' 에이전트다.",
-    "인간이 기업을 판단하는 사고 순서를 따른다: 재무→이벤트→시장(동의/불일치)→비교군 보정→조건부 종합.",
+    "인간이 기업을 판단하는 사고 순서를 따른다: 재무→이벤트→시장(동의/불일치)→비교군 보정→매크로 환경→스크리너 트렌드→조건부 종합.",
+    "",
+    "신호 종류:",
+    "- financial_signal: 재무제표, 기업 프로필, 밸류에이션 지표",
+    "- event_signal: 뉴스, 이벤트, 실적 발표",
+    "- market_signal: 차트, 시장 행동, 가격 움직임",
+    "- peer_signal: 관련주, 산업 비교",
+    hasMacroSignal ? "- macro_signal: 매크로 경제 지표(지수, 통화, 원자재, 채권), 시장 전반 뉴스 (반드시 종합 판단에 포함)" : "",
+    hasScreenerSignal ? "- screener_signal: 스크리너 데이터에서 발견된 시장 트렌드, 섹터/종목군 특징 (반드시 종합 판단에 포함)" : "",
     "",
     "금지:",
     "- 매수/매도/추천/목표가/수익률 예측",
@@ -1531,9 +1655,11 @@ async function gptFinalJudgement({ symbolRaw, signals, story, marketCheck, peerA
     "출력 구조(한국어, 마크다운):",
     "1. 기업 현재 상황 요약",
     "2. 신호 간 일관성 / 충돌 지점",
-    "3. 긍정적으로 해석될 수 있는 요소",
-    "4. 주의가 필요한 요소",
-    "5. 조건부 종합 판단(어떤 조건이 충족/변하면 해석이 바뀌는지)",
+    hasMacroSignal ? "3. 매크로 환경이 기업에 미치는 영향" : "",
+    hasScreenerSignal ? "4. 스크리너 트렌드와의 연관성" : "",
+    hasMacroSignal || hasScreenerSignal ? "5. 긍정적으로 해석될 수 있는 요소" : "3. 긍정적으로 해석될 수 있는 요소",
+    hasMacroSignal || hasScreenerSignal ? "6. 주의가 필요한 요소" : "4. 주의가 필요한 요소",
+    hasMacroSignal || hasScreenerSignal ? "7. 조건부 종합 판단(어떤 조건이 충족/변하면 해석이 바뀌는지)" : "5. 조건부 종합 판단(어떤 조건이 충족/변하면 해석이 바뀌는지)",
     "",
     "반드시 마지막에 고지 문구를 그대로 포함:",
     "“본 서비스는 정보 제공 및 이해 보조 목적의 AI 시스템이며,",
@@ -1681,6 +1807,11 @@ async function handleJudgeStream(req, res) {
 
     // 0) 데이터 수집/정규화(RAG Bundle)
     sseEvent(res, { event: "status", data: { stage: "collect" } });
+    // 클라이언트에서 전송한 매크로와 스크리너 데이터
+    const macroIndices = Array.isArray(payload.macroIndices) ? payload.macroIndices.slice(0, 30) : [];
+    const macroNews = Array.isArray(payload.macroNews) ? payload.macroNews.slice(0, 20) : [];
+    const screener = clampStr(payload.screener || "", 200_000);
+
     const [financials, news, ohlcv, peers] = await Promise.all([
       (async () => {
         const f = await (async () => {
@@ -1756,7 +1887,7 @@ async function handleJudgeStream(req, res) {
       fetchPeersBundle(symbolRaw)
     ]);
 
-    const rag = buildRagBundle({ symbolRaw, financials, news, ohlcv, peers });
+    const rag = buildRagBundle({ symbolRaw, financials, news, ohlcv, peers, macroIndices, macroNews, screener });
     const input_hash = sha256Hex(JSON.stringify({ symbolRaw, question, rag_version: rag.rag_version, docs: rag.docs.map((d) => ({ id: d.doc_id, type: d.type, asOf: d.asOf })) }));
     sseEvent(res, { event: "rag", data: { run_id, input_hash, rag_meta: { symbol: rag.symbol, asOf: rag.asOf, doc_ids: rag.docs.map((d) => d.doc_id) } } });
     // 클라이언트/DB 저장용(재현 가능성 ↑). UI에는 노출하지 않도록 클라이언트에서 별도 처리.
@@ -1780,8 +1911,44 @@ async function handleJudgeStream(req, res) {
 
     // 1) 신호 추출
     sseEvent(res, { event: "status", data: { stage: "signal_extract" } });
-    const signals = await gptSignalExtraction({ symbolRaw, question, rag });
-    sseEvent(res, { event: "signal", data: { signals } });
+    
+    // 매크로와 스크리너 데이터 존재 여부 확인 및 로그
+    const hasMacroInRag = rag?.docs?.some(d => d.type === "macro_indices" || d.type === "macro_news");
+    const hasScreenerInRag = rag?.docs?.some(d => d.type === "screener");
+    const macroDocCount = rag?.docs?.filter(d => d.type === "macro_indices" || d.type === "macro_news").length || 0;
+    const screenerDocCount = rag?.docs?.filter(d => d.type === "screener").length || 0;
+    console.log("신호 추출 시작:", {
+      symbolRaw,
+      hasMacro: hasMacroInRag,
+      hasScreener: hasScreenerInRag,
+      macroDocCount,
+      screenerDocCount,
+      totalDocs: rag?.docs?.length || 0
+    });
+    
+    let signals;
+    try {
+      signals = await gptSignalExtraction({ symbolRaw, question, rag });
+      console.log("신호 추출 완료:", {
+        hasMacroSignal: !!(signals.macro_signal && signals.macro_signal.trim().length > 0),
+        hasScreenerSignal: !!(signals.screener_signal && signals.screener_signal.trim().length > 0),
+        macroSignalLength: signals.macro_signal?.length || 0,
+        screenerSignalLength: signals.screener_signal?.length || 0
+      });
+      sseEvent(res, { event: "signal", data: { signals } });
+    } catch (e) {
+      console.error("신호 추출 실패:", e);
+      // 신호 추출 실패 시 기본값 사용
+      signals = {
+        financial_signal: "",
+        event_signal: "",
+        market_signal: "",
+        peer_signal: "",
+        macro_signal: "",
+        screener_signal: ""
+      };
+      sseEvent(res, { event: "signal", data: { signals, error: String(e?.message || e) } });
+    }
 
     // 2) 스토리 생성
     sseEvent(res, { event: "status", data: { stage: "story_link" } });
@@ -1844,11 +2011,13 @@ async function handleJudgeStream(req, res) {
     sseEvent(res, { event: "final", data: { run_id, input_hash, answer: finalText, verifier: { policy, gemini: gem } } });
     sseEvent(res, { event: "done", data: {} });
     res.end();
-  } catch (e) {
-    sseEvent(res, { event: "error", data: { error: "judge_stream_failed", details: String(e?.details || e?.message || e) } });
-    sseEvent(res, { event: "done", data: {} });
-    res.end();
-  }
+    } catch (e) {
+      console.error("judge_stream 전체 에러:", e);
+      console.error("에러 스택:", e?.stack);
+      sseEvent(res, { event: "error", data: { error: "judge_stream_failed", details: String(e?.details || e?.message || e), stack: e?.stack } });
+      sseEvent(res, { event: "done", data: {} });
+      res.end();
+    }
 }
 
 async function gptVisionPortfolioExtract({ images, hintSymbol }) {

@@ -2268,22 +2268,27 @@ function setLeftView(view, reason) {
   const btnMacro = $("viewMacro");
   const btnScreener = $("viewScreener");
   const btnAiAnalysis = $("viewAiAnalysis");
+  
   if (btnChart && btnScreener && btnCompany && btnMacro && btnAiAnalysis) {
     const isChart = v === "chart";
     const isCompany = v === "company";
     const isMacro = v === "macro";
     const isScreener = v === "screener";
     const isAiAnalysis = v === "aiAnalysis";
+    
     btnChart.classList.toggle("is-active", isChart);
     btnCompany.classList.toggle("is-active", isCompany);
     btnMacro.classList.toggle("is-active", isMacro);
     btnScreener.classList.toggle("is-active", isScreener);
     btnAiAnalysis.classList.toggle("is-active", isAiAnalysis);
+    
     btnChart.setAttribute("aria-selected", String(isChart));
     btnCompany.setAttribute("aria-selected", String(isCompany));
     btnMacro.setAttribute("aria-selected", String(isMacro));
     btnScreener.setAttribute("aria-selected", String(isScreener));
     btnAiAnalysis.setAttribute("aria-selected", String(isAiAnalysis));
+  } else {
+    console.warn("탭 버튼을 찾을 수 없습니다:", { btnChart, btnCompany, btnMacro, btnScreener, btnAiAnalysis });
   }
 
   if (v === "chart") mountTradingViewChart();
@@ -3716,6 +3721,12 @@ async function runJudgement() {
 }
 
 function init() {
+  // 탭 버튼들이 존재하는지 확인
+  const segmentedContainer = document.querySelector(".segmented");
+  if (!segmentedContainer) {
+    console.error("탭 컨테이너(.segmented)를 찾을 수 없습니다.");
+  }
+  
   initSymbolAutocomplete();
   $("reloadChart").addEventListener("click", () => {
     // 새로고침 버튼 클릭 시 현재 심볼 값으로 변경 적용
@@ -3729,11 +3740,18 @@ function init() {
     else mountTradingViewChart();
     addMessage("system", "왼쪽 화면을 새로고침했어요.");
   });
-  $("viewChart")?.addEventListener("click", () => setLeftView("chart"));
-  $("viewCompany")?.addEventListener("click", () => setLeftView("company"));
-  $("viewMacro")?.addEventListener("click", () => setLeftView("macro"));
-  $("viewScreener")?.addEventListener("click", () => setLeftView("screener"));
-  $("viewAiAnalysis")?.addEventListener("click", () => setLeftView("aiAnalysis"));
+  // 탭 버튼 이벤트 리스너 설정
+  const viewChartBtn = $("viewChart");
+  const viewCompanyBtn = $("viewCompany");
+  const viewMacroBtn = $("viewMacro");
+  const viewScreenerBtn = $("viewScreener");
+  const viewAiAnalysisBtn = $("viewAiAnalysis");
+  
+  if (viewChartBtn) viewChartBtn.addEventListener("click", () => setLeftView("chart"));
+  if (viewCompanyBtn) viewCompanyBtn.addEventListener("click", () => setLeftView("company"));
+  if (viewMacroBtn) viewMacroBtn.addEventListener("click", () => setLeftView("macro"));
+  if (viewScreenerBtn) viewScreenerBtn.addEventListener("click", () => setLeftView("screener"));
+  if (viewAiAnalysisBtn) viewAiAnalysisBtn.addEventListener("click", () => setLeftView("aiAnalysis"));
   $("toggleCalendar")?.addEventListener("click", () => {
     if (leftView !== "screener") return;
     calendarCollapsed = !calendarCollapsed;
@@ -3905,9 +3923,6 @@ function init() {
     openMyPage();
   });
 
-    openMyPage();
-  });
-
   // Enter로 전송(Shift+Enter는 줄바꿈)
   $("question").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -3916,9 +3931,18 @@ function init() {
     }
   });
 
-  // 초기 화면: 차트
+  // 초기 화면 설정 전에 UI 업데이트
+  updateLeftControlsUI();
+  
+  // 초기 화면: 매크로
   leftView = "";
   setLeftView("macro");
+  
+  // 탭 버튼들이 제대로 보이는지 확인
+  const segmentedEl = document.querySelector(".segmented");
+  if (segmentedEl) {
+    segmentedEl.style.display = "inline-flex";
+  }
 
   // 저장된 대화 복원(재접속/새로고침 시)
   if (Array.isArray(chatStore) && chatStore.length) {
@@ -3935,6 +3959,11 @@ function init() {
   }
 }
 
-init();
+// DOM이 완전히 로드된 후 초기화
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", init);
+} else {
+  init();
+}
 
 

@@ -411,6 +411,41 @@ async function main() {
     const statusEl = $("portfolioAnalysisStatus");
     const outEl = $("portfolioAnalysisOut");
 
+    async function loadRecentPortfolioAnalysis() {
+      try {
+        // 1일 이내 최신 포트폴리오 분석 확인
+        const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        const snap = await db.collection("users").doc(user.uid).collection("portfolio_analyses")
+          .orderBy("createdAt", "desc")
+          .limit(1)
+          .get();
+        const doc = snap.docs[0];
+        if (!doc) return null;
+        const data = doc.data();
+        const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : new Date();
+        if (createdAt < oneDayAgo) return null;
+        return {
+          answer: data.answer || "",
+          status: data.status || "완료",
+          createdAt: createdAt.toISOString()
+        };
+      } catch {
+        return null;
+      }
+    }
+
+    async function loadRecentAnalysis() {
+      const recent = await loadRecentPortfolioAnalysis();
+      if (recent) {
+        statusEl.textContent = "완료 (최근 분석 결과)";
+        outEl.textContent = recent.answer || "-";
+        runBtn.textContent = "새로 분석하기";
+      }
+    }
+
+    // 페이지 로드 시 최근 분석 결과 확인
+    await loadRecentAnalysis();
+
     async function runAnalysis() {
       if (!lastSaved || !Array.isArray(lastSaved?.positions) || !lastSaved.positions.length) {
         statusEl.textContent = "포트폴리오가 비어 있습니다.";
@@ -463,11 +498,27 @@ async function main() {
           if (idx < 0) continue;
           const chunk = buf.slice(0, idx + 2);
           buf = buf.slice(idx + 2);
+          let finalAnswer = "";
           for (const ev of parseSseChunks(chunk)) {
             if (ev.event === "status") statusEl.textContent = String(ev.data?.stage || ev.data?.message || "진행 중…");
             if (ev.event === "final") {
+              finalAnswer = String(ev.data?.answer || ev.data?.text || "").trim() || "-";
               statusEl.textContent = "완료";
-              outEl.textContent = String(ev.data?.answer || ev.data?.text || "").trim() || "-";
+              outEl.textContent = finalAnswer;
+              
+              // DB에 저장
+              try {
+                await db.collection("users").doc(user.uid).collection("portfolio_analyses").add({
+                  positions: lastSaved?.positions || [],
+                  quotes: lastQuotes || [],
+                  memo: String($("portfolioText")?.value || ""),
+                  answer: finalAnswer,
+                  status: "완료",
+                  createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+              } catch (e) {
+                console.error("포트폴리오 분석 저장 실패:", e);
+              }
             }
             if (ev.event === "error") {
               statusEl.textContent = "오류";
@@ -485,7 +536,11 @@ async function main() {
       }
     }
 
-    runBtn?.addEventListener("click", runAnalysis);
+    runBtn?.addEventListener("click", () => {
+      // "새로 분석하기" 버튼 텍스트 초기화
+      runBtn.textContent = "분석 생성";
+      runAnalysis();
+    });
     stopBtn?.addEventListener("click", () => {
       try {
         analysisAbort?.abort();

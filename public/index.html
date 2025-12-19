@@ -3,21 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>GOYO AI Invest</title>
+    <title>AI Invest</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <header class="topbar">
       <div class="brand">
         <div class="brand__line">
-          <div class="brand__title">GOYO AI Invest</div>
+          <div class="brand__title">AI Invest</div>
           <div class="brand__meta">
             본 서비스는 금융 데이터를 제공하거나 투자 판단을 하지 않으며, 공개 웹 정보를 탐색·요약하는 도구입니다. · 야후 OHLCV 자동 갱신(30초)을 기반으로 해설합니다. (실시간 보장 X)
           </div>
         </div>
       </div>
       <div class="topActions">
-        <button id="portfolioBtn" class="btn btn--ghost btn--compact" type="button">포트폴리오</button>
         <button id="mypageBtn" class="btn btn--ghost btn--compact" type="button" disabled>마이페이지</button>
         <button id="authPageBtn" class="btn btn--ghost btn--compact" type="button">로그인/회원가입</button>
         <button id="logoutBtn" class="btn btn--ghost btn--compact" type="button" style="display:none;">로그아웃</button>
@@ -34,7 +33,7 @@
             </div>
             <div class="leftHeadControls">
               <button id="toggleCalendar" class="btn btn--ghost btn--compact" type="button" style="display:none;">캘린더</button>
-              <div id="leftControls" class="controls controls--left" style="display:none;">
+              <div id="leftControls" class="controls controls--left" style="display:flex;">
                 <label class="control">
                   <span>심볼</span>
                   <div class="symbolField">
@@ -62,6 +61,7 @@
                 <button id="viewScreener" class="segmented__btn" type="button" role="tab" aria-selected="false">스크리너</button>
                 <button id="viewChart" class="segmented__btn" type="button" role="tab" aria-selected="false">차트</button>
                 <button id="viewCompany" class="segmented__btn" type="button" role="tab" aria-selected="false">기업분석</button>
+                <button id="viewAiAnalysis" class="segmented__btn" type="button" role="tab" aria-selected="false">AI 종합 분석</button>
               </div>
             </div>
           </div>

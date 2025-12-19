@@ -396,7 +396,7 @@ async function ensureChatSessionDoc() {
       email: fbState.user.email || "",
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-      app: "GOYO AI Invest",
+      app: "AI Invest",
       userAgent: navigator.userAgent || "",
       mode: meta?.mode || getSessionMode(),
       day: meta?.day || todayKey(),
@@ -575,9 +575,8 @@ function renderTopAuthUI() {
   const authPageBtn = $("authPageBtn");
   const logoutBtn = $("logoutBtn");
   const mypageBtn = $("mypageBtn");
-  const portfolioBtn = $("portfolioBtn");
 
-  if (!authPageBtn || !logoutBtn || !mypageBtn || !portfolioBtn) return;
+  if (!authPageBtn || !logoutBtn || !mypageBtn) return;
 
   if (firebaseSignedIn()) {
     authPageBtn.style.display = "none";
@@ -585,13 +584,11 @@ function renderTopAuthUI() {
     logoutBtn.textContent = `로그아웃 (${fbState.user.email || "사용자"})`;
     mypageBtn.style.display = "";
     mypageBtn.disabled = false;
-    portfolioBtn.style.display = "";
   } else {
     authPageBtn.style.display = "";
     logoutBtn.style.display = "none";
     mypageBtn.style.display = "none";
     mypageBtn.disabled = true;
-    portfolioBtn.style.display = "none";
   }
 }
 
@@ -1200,8 +1197,10 @@ function initSymbolAutocomplete() {
     if (!it) return;
     input.value = it.tvSymbol;
     hide();
-    // 기존 로직(차트 리마운트 + 야후 갱신)을 타게 change 이벤트 발생
-    input.dispatchEvent(new Event("change"));
+    // 자동완성 선택 시 심볼 변경 적용
+    if (typeof window.applySymbolChange === "function") {
+      window.applySymbolChange();
+    }
     if (it._yahoo) upsertTickerMasterFromYahooHit(it._yahoo).catch(() => {});
     if (it._db) maybeEnrichTickerMasterRow(it._db).catch(() => {});
   }
@@ -2163,7 +2162,7 @@ async function loadYahooOhlcv() {
 
 let yahooTimer = null;
 let tvRemountTimer = null;
-let leftView = "chart"; // "chart" | "company" | "macro" | "screener"
+let leftView = "chart"; // "chart" | "company" | "macro" | "screener" | "aiAnalysis"
 let calendarCollapsed = false;
 let macroTimer = null;
 let lastMacroAt = 0;
@@ -2260,7 +2259,7 @@ function startYahooAutoPoll(seconds) {
 }
 
 function setLeftView(view, reason) {
-  const v = view === "company" ? "company" : view === "macro" ? "macro" : view === "screener" ? "screener" : "chart";
+  const v = view === "company" ? "company" : view === "macro" ? "macro" : view === "screener" ? "screener" : view === "aiAnalysis" ? "aiAnalysis" : "chart";
   if (leftView === v) return;
   leftView = v;
 
@@ -2268,24 +2267,29 @@ function setLeftView(view, reason) {
   const btnCompany = $("viewCompany");
   const btnMacro = $("viewMacro");
   const btnScreener = $("viewScreener");
-  if (btnChart && btnScreener && btnCompany && btnMacro) {
+  const btnAiAnalysis = $("viewAiAnalysis");
+  if (btnChart && btnScreener && btnCompany && btnMacro && btnAiAnalysis) {
     const isChart = v === "chart";
     const isCompany = v === "company";
     const isMacro = v === "macro";
     const isScreener = v === "screener";
+    const isAiAnalysis = v === "aiAnalysis";
     btnChart.classList.toggle("is-active", isChart);
     btnCompany.classList.toggle("is-active", isCompany);
     btnMacro.classList.toggle("is-active", isMacro);
     btnScreener.classList.toggle("is-active", isScreener);
+    btnAiAnalysis.classList.toggle("is-active", isAiAnalysis);
     btnChart.setAttribute("aria-selected", String(isChart));
     btnCompany.setAttribute("aria-selected", String(isCompany));
     btnMacro.setAttribute("aria-selected", String(isMacro));
     btnScreener.setAttribute("aria-selected", String(isScreener));
+    btnAiAnalysis.setAttribute("aria-selected", String(isAiAnalysis));
   }
 
   if (v === "chart") mountTradingViewChart();
   else if (v === "company") mountTradingViewCompany();
   else if (v === "macro") mountMacro();
+  else if (v === "aiAnalysis") mountAiAnalysis();
   else mountTradingViewScreener();
   updateCalendarToggleUI();
   updateLeftControlsUI();
@@ -2333,7 +2337,7 @@ function setLeftView(view, reason) {
   }
 
   if (reason) {
-    const label = v === "chart" ? "차트" : v === "company" ? "기업분석" : v === "macro" ? "매크로" : "스크리너";
+    const label = v === "chart" ? "차트" : v === "company" ? "기업분석" : v === "macro" ? "매크로" : v === "aiAnalysis" ? "AI 종합 분석" : "스크리너";
     addMessage("system", `왼쪽 화면을 '${label}'로 전환했습니다. (${reason})`);
   }
 }
@@ -2574,8 +2578,8 @@ function updateCalendarToggleUI() {
 function updateLeftControlsUI() {
   const box = $("leftControls");
   if (!box) return;
-  // 심볼/간격/새로고침은 차트/기업분석에서만 표시
-  box.style.display = leftView === "chart" || leftView === "company" ? "flex" : "none";
+  // 심볼/간격/새로고침은 모든 탭에서 표시
+  box.style.display = "flex";
 }
 
 async function fetchYahooIndices() {
@@ -2701,6 +2705,33 @@ async function fetchMarketInsight({ indices, news, force }) {
   return data;
 }
 
+async function loadRecentMarketInsight() {
+  if (!firebaseSignedIn() || !firebaseReady() || !cloudSaveEnabled()) return null;
+  try {
+    const u = userDocRef();
+    if (!u) return null;
+    // 5분 이내 최신 Market Insight 확인
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const snap = await u.collection("insights")
+      .where("type", "==", "market_insight")
+      .orderBy("createdAt", "desc")
+      .limit(1)
+      .get();
+    const doc = snap.docs[0];
+    if (!doc) return null;
+    const data = doc.data();
+    const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.asOf || Date.now());
+    if (createdAt < fiveMinutesAgo) return null;
+    return {
+      insight: data.insight || "",
+      asOf: data.asOf || createdAt.toISOString(),
+      cached: true
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function loadMarketInsight({ force } = {}) {
   if (!force && lastInsightAt && Date.now() - lastInsightAt < 1500) return;
   lastInsightAt = Date.now();
@@ -2712,6 +2743,16 @@ async function loadMarketInsight({ force } = {}) {
   if (!el) return;
 
   try {
+    // 5분 이내 최근 결과 확인 (force가 아닐 때만)
+    if (!force) {
+      const recent = await loadRecentMarketInsight();
+      if (recent) {
+        el.textContent = String(recent.insight || "").trim() || "(빈 응답)";
+        if (metaEl) metaEl.textContent = `GPT · cached · ${new Date(recent.asOf || Date.now()).toLocaleString()}`;
+        return;
+      }
+    }
+
     el.textContent = "Market Insight 생성 중…";
     if (metaEl) metaEl.textContent = "GPT · 생성 중…";
 
@@ -2804,6 +2845,452 @@ function mountMacro() {
   $("insightRefresh")?.addEventListener("click", () => loadMarketInsight({ force: true }));
   loadMacro();
   loadMarketInsight();
+}
+
+let aiAnalysisAbortController = null;
+
+async function loadRecentAiAnalysis(symbol) {
+  if (!firebaseSignedIn() || !firebaseReady() || !cloudSaveEnabled()) return null;
+  try {
+    const u = userDocRef();
+    if (!u) return null;
+    // 5분 이내 최신 AI 종합분석 확인
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const symbolRaw = symbol.replace(/NASDAQ:|NYSE:|AMEX:/i, "").trim();
+    const snap = await u.collection("judge_runs")
+      .where("symbol", "==", symbolRaw)
+      .orderBy("createdAt", "desc")
+      .limit(1)
+      .get();
+    const doc = snap.docs[0];
+    if (!doc) return null;
+    const data = doc.data();
+    const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : new Date();
+    if (createdAt < fiveMinutesAgo) return null;
+    return {
+      run_id: data.run_id || doc.id,
+      final: data.final || "",
+      signals: data.signals || null,
+      story: data.story || "",
+      marketCheck: data.marketCheck || null,
+      peerAdjust: data.peerAdjust || null,
+      rag_meta: data.rag_meta || null,
+      verifier: data.verifier || null,
+      createdAt: createdAt.toISOString()
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function restoreAiAnalysisFromRecent(recent) {
+  if (!recent) return false;
+  const cardsEl = $("aiAnalysisCards");
+  const finalEl = $("aiAnalysisFinal");
+  const finalContentEl = $("aiAnalysisFinalContent");
+  if (!cardsEl || !finalEl || !finalContentEl) return false;
+
+  // 카드 데이터 복원
+  const cardData = {
+    macro: { title: "매크로", status: "완료", content: "", summary: "" },
+    screener: { title: "스크리너", status: "완료", content: "", summary: "" },
+    chart: { title: "차트", status: "완료", content: "", summary: "" },
+    company: { title: "기업분석", status: "완료", content: "", summary: "" },
+    news: { title: "최근 이슈", status: "완료", content: "", summary: "" },
+    peers: { title: "관련주", status: "완료", content: "", summary: "" }
+  };
+
+  const signals = recent.signals || {};
+  if (signals.market_signal) {
+    cardData.chart.summary = signals.market_signal;
+  }
+  if (signals.financial_signal) {
+    cardData.company.summary = signals.financial_signal;
+  }
+  if (signals.event_signal) {
+    cardData.news.summary = signals.event_signal;
+  }
+  if (signals.peer_signal) {
+    cardData.peers.summary = signals.peer_signal;
+  }
+
+  const story = recent.story || "";
+  const marketCheck = recent.marketCheck || {};
+  if (marketCheck.reason) {
+    cardData.chart.content = `시장 검증: ${marketCheck.agreement || ""}\n${marketCheck.reason || ""}`;
+    if (story) {
+      cardData.chart.content += `\n\n[스토리]\n${story}`;
+    }
+  }
+
+  const peerAdjust = recent.peerAdjust || {};
+  if (peerAdjust.adjustment) {
+    cardData.peers.content = `비교군 보정:\n${peerAdjust.adjustment || ""}\n\n산업 대비:\n${peerAdjust.industry_vs_company || ""}`;
+  }
+
+  // 카드 렌더링
+  cardsEl.innerHTML = Object.entries(cardData)
+    .map(([key, data]) => {
+      const statusClass = data.status === "완료" ? "status-done" : "status-waiting";
+      return `
+        <div class="aiAnalysisCard" data-card="${key}">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <div style="font-size: 16px; font-weight: 700;">${data.title}</div>
+            <div class="aiAnalysisStatus ${statusClass}">
+              ${data.status}
+            </div>
+          </div>
+          ${data.summary ? `<div class="aiAnalysisSummary">${escapeHtml(data.summary)}</div>` : ""}
+          ${data.content ? `<div class="aiAnalysisContent">${escapeHtml(data.content)}</div>` : ""}
+        </div>
+      `;
+    })
+    .join("");
+
+  // 최종 판단 표시
+  if (recent.final) {
+    finalEl.style.display = "block";
+    finalContentEl.textContent = recent.final;
+  }
+
+  return true;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+async function mountAiAnalysis() {
+  const root = $("leftWidgetRoot");
+  if (!root) return;
+
+  const toggleBtn = $("toggleCalendar");
+  if (toggleBtn) toggleBtn.style.display = "none";
+
+  const symbol = $("symbol").value.trim() || "NASDAQ:AAPL";
+
+  root.innerHTML = `
+    <div class="aiAnalysisContainer" style="padding: 16px; height: 100%; overflow-y: auto;">
+      <div style="margin-bottom: 16px;">
+        <div style="font-size: 18px; font-weight: 700; margin-bottom: 8px;">AI 종합 분석</div>
+        <div style="font-size: 14px; color: #666; margin-bottom: 16px;">
+          매크로, 스크리너, 차트, 기업분석, 최근 이슈, 관련주를 종합적으로 평가합니다.
+        </div>
+        <button id="aiAnalysisStart" class="btn" type="button" style="margin-bottom: 16px;">분석 시작</button>
+        <button id="aiAnalysisStop" class="btn btn--ghost" type="button" style="margin-bottom: 16px; display: none;">분석 중지</button>
+      </div>
+      <div id="aiAnalysisCards" class="aiAnalysisCards" style="display: grid; gap: 16px;">
+        <!-- 카드들이 여기에 동적으로 추가됩니다 -->
+      </div>
+      <div id="aiAnalysisFinal" class="aiAnalysisFinal" style="margin-top: 24px; padding: 16px; background: #f5f5f5; border-radius: 8px; display: none;">
+        <div style="font-size: 16px; font-weight: 700; margin-bottom: 12px;">조건부 종합 판단</div>
+        <div id="aiAnalysisFinalContent" style="white-space: pre-wrap; line-height: 1.6;"></div>
+      </div>
+    </div>
+  `;
+
+  // 5분 이내 최근 결과 확인 및 복원
+  const recent = await loadRecentAiAnalysis(symbol);
+  if (recent) {
+    const restored = await restoreAiAnalysisFromRecent(recent);
+    if (restored) {
+      const startBtn = $("aiAnalysisStart");
+      if (startBtn) {
+        startBtn.textContent = "새로 분석하기";
+      }
+    }
+  }
+
+  $("aiAnalysisStart")?.addEventListener("click", () => startAiAnalysis());
+  $("aiAnalysisStop")?.addEventListener("click", () => stopAiAnalysis());
+}
+
+function stopAiAnalysis() {
+  if (aiAnalysisAbortController) {
+    aiAnalysisAbortController.abort();
+    aiAnalysisAbortController = null;
+  }
+  const startBtn = $("aiAnalysisStart");
+  const stopBtn = $("aiAnalysisStop");
+  if (startBtn) startBtn.style.display = "inline-flex";
+  if (stopBtn) stopBtn.style.display = "none";
+}
+
+async function startAiAnalysis() {
+  // 항상 현재 심볼 필드의 값을 사용
+  const symbol = $("symbol").value.trim() || "NASDAQ:AAPL";
+  
+  // 5분 이내 최근 결과 확인 (강제 재분석이 아닐 때만)
+  const recent = await loadRecentAiAnalysis(symbol);
+  if (recent) {
+    const restored = await restoreAiAnalysisFromRecent(recent);
+    if (restored) {
+      const startBtn = $("aiAnalysisStart");
+      if (startBtn) {
+        startBtn.textContent = "새로 분석하기";
+      }
+      // 사용자가 "새로 분석하기"를 명시적으로 클릭할 때만 진행
+      return;
+    }
+  }
+  
+  let question = "";
+  
+  // 매크로나 스크리너 뷰일 때는 추가 컨텍스트를 question에 포함
+  if (leftView === "macro") {
+    const macroData = {
+      indices: latestMacroIndices || [],
+      news: latestMacroNews || []
+    };
+    question = `현재 매크로 환경을 분석해주세요. 시장 지표: ${JSON.stringify(macroData.indices).slice(0, 500)}... 주요 뉴스: ${JSON.stringify(macroData.news).slice(0, 500)}...`;
+  } else if (leftView === "screener") {
+    const screenerData = latestScreenerText || "";
+    question = `스크리너 데이터를 기반으로 시장 상황을 분석해주세요. 스크리너: ${screenerData.slice(0, 1000)}...`;
+  }
+  
+  const cardsEl = $("aiAnalysisCards");
+  const finalEl = $("aiAnalysisFinal");
+  const finalContentEl = $("aiAnalysisFinalContent");
+  const startBtn = $("aiAnalysisStart");
+  const stopBtn = $("aiAnalysisStop");
+
+  if (!cardsEl || !finalEl || !finalContentEl) return;
+
+  // 기존 분석 중지
+  stopAiAnalysis();
+
+  // UI 초기화
+  cardsEl.innerHTML = "";
+  finalEl.style.display = "none";
+  finalContentEl.textContent = "";
+  if (startBtn) startBtn.style.display = "none";
+  if (stopBtn) stopBtn.style.display = "inline-flex";
+
+  // 카드 초기 상태 - 현재 뷰에 따라 적절한 카드 활성화
+  const cardData = {
+    macro: { title: "매크로", status: leftView === "macro" ? "분석 중..." : "대기 중...", content: "", summary: "" },
+    screener: { title: "스크리너", status: leftView === "screener" ? "분석 중..." : "대기 중...", content: "", summary: "" },
+    chart: { title: "차트", status: (leftView === "chart" || leftView === "aiAnalysis") ? "분석 중..." : "대기 중...", content: "", summary: "" },
+    company: { title: "기업분석", status: (leftView === "company" || leftView === "aiAnalysis") ? "분석 중..." : "대기 중...", content: "", summary: "" },
+    news: { title: "최근 이슈", status: "대기 중...", content: "", summary: "" },
+    peers: { title: "관련주", status: "대기 중...", content: "", summary: "" }
+  };
+
+  function renderCards() {
+    cardsEl.innerHTML = Object.entries(cardData)
+      .map(([key, data]) => {
+        const statusClass = data.status === "완료" ? "status-done" : data.status === "분석 중..." ? "status-progress" : "status-waiting";
+        return `
+          <div class="aiAnalysisCard" data-card="${key}">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+              <div style="font-size: 16px; font-weight: 700;">${data.title}</div>
+              <div class="aiAnalysisStatus ${statusClass}">
+                ${data.status}
+              </div>
+            </div>
+            ${data.summary ? `<div class="aiAnalysisSummary">${escapeHtml(data.summary)}</div>` : ""}
+            ${data.content ? `<div class="aiAnalysisContent">${escapeHtml(data.content)}</div>` : ""}
+          </div>
+        `;
+      })
+      .join("");
+  }
+
+  renderCards();
+
+  // AbortController 생성
+  aiAnalysisAbortController = new AbortController();
+
+  try {
+    const resp = await fetch("/api/judge_stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbol, question }),
+      signal: aiAnalysisAbortController.signal
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      addMessage("system", `오류: ${resp.status} ${resp.statusText}\n${text}`.trim(), "error");
+      return;
+    }
+
+    if (!resp.body) {
+      addMessage("system", "오류: 스트리밍 바디가 없습니다.", "error");
+      return;
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buf = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const parts = buf.split("\n\n");
+      buf = parts.pop() || "";
+
+      for (const part of parts) {
+        const lines = part.split("\n");
+        let eventName = "message";
+        const dataLines = [];
+        for (const line of lines) {
+          if (line.startsWith("event:")) eventName = line.slice(6).trim();
+          if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+        }
+        const dataRaw = dataLines.join("\n");
+        let data;
+        try {
+          data = dataRaw ? JSON.parse(dataRaw) : {};
+        } catch {
+          data = { raw: dataRaw };
+        }
+
+        if (eventName === "status") {
+          const stage = String(data?.stage || "");
+          // 단계별로 카드 상태 업데이트
+          if (stage === "collect") {
+            cardData.macro.status = "분석 중...";
+            cardData.screener.status = "분석 중...";
+            cardData.chart.status = "분석 중...";
+            cardData.company.status = "분석 중...";
+            cardData.news.status = "분석 중...";
+            cardData.peers.status = "분석 중...";
+            renderCards();
+          } else if (stage === "signal_extract") {
+            cardData.macro.status = "분석 중...";
+            cardData.screener.status = "분석 중...";
+            cardData.chart.status = "분석 중...";
+            cardData.company.status = "분석 중...";
+            renderCards();
+          }
+        } else if (eventName === "rag") {
+          // RAG 데이터 수집 완료 - 각 파트별 데이터 요약 표시
+          const ragMeta = data?.rag_meta || {};
+          const docIds = Array.isArray(ragMeta.doc_ids) ? ragMeta.doc_ids : [];
+          
+          // doc_ids를 기반으로 각 파트별 데이터 존재 여부 확인
+          const hasCompany = docIds.some(id => id.includes("company_profile") || id.includes("income_statement") || id.includes("balance_sheet") || id.includes("cashflow"));
+          const hasNews = docIds.some(id => id.includes("news"));
+          const hasChart = docIds.some(id => id.includes("market_behavior"));
+          const hasPeers = docIds.some(id => id.includes("peer_comparison"));
+          
+          if (hasCompany) {
+            cardData.company.status = "완료";
+            cardData.company.content = "재무제표 및 기업 프로필 데이터 수집 완료";
+          }
+          if (hasNews) {
+            cardData.news.status = "완료";
+            cardData.news.content = "최근 뉴스 데이터 수집 완료";
+          }
+          if (hasChart) {
+            cardData.chart.status = "완료";
+            cardData.chart.content = "차트 및 시장 행동 데이터 수집 완료";
+          }
+          if (hasPeers) {
+            cardData.peers.status = "완료";
+            cardData.peers.content = "관련주 비교 데이터 수집 완료";
+          }
+          
+          // 매크로와 스크리너 데이터 수집 확인
+          if (leftView === "macro") {
+            const hasMacro = docIds.some(id => id.includes("macro") || id.includes("indices") || id.includes("news"));
+            if (hasMacro || latestMacroIndices?.length) {
+              cardData.macro.status = "완료";
+              cardData.macro.content = `시장 지표 ${latestMacroIndices?.length || 0}개 수집 완료`;
+            }
+          }
+          if (leftView === "screener") {
+            const hasScreener = docIds.some(id => id.includes("screener"));
+            if (hasScreener || latestScreenerText) {
+              cardData.screener.status = "완료";
+              cardData.screener.content = "스크리너 데이터 수집 완료";
+            }
+          }
+          
+          renderCards();
+        } else if (eventName === "signal") {
+          // 신호 추출 결과를 파트별로 분류
+          const signals = data?.signals || {};
+          if (signals.market_signal) {
+            cardData.chart.summary = signals.market_signal;
+            cardData.chart.status = "완료";
+          }
+          if (signals.financial_signal) {
+            cardData.company.summary = signals.financial_signal;
+            cardData.company.status = "완료";
+          }
+          if (signals.event_signal) {
+            cardData.news.summary = signals.event_signal;
+            cardData.news.status = "완료";
+          }
+          if (signals.peer_signal) {
+            cardData.peers.summary = signals.peer_signal;
+            cardData.peers.status = "완료";
+          }
+          // 매크로와 스크리너 신호가 있으면 표시
+          if (signals.macro_signal && leftView === "macro") {
+            cardData.macro.summary = signals.macro_signal;
+            cardData.macro.status = "완료";
+          }
+          if (signals.screener_signal && leftView === "screener") {
+            cardData.screener.summary = signals.screener_signal;
+            cardData.screener.status = "완료";
+          }
+          renderCards();
+        } else if (eventName === "story") {
+          // 스토리 링크 결과를 각 카드에 추가
+          const story = String(data?.story || "");
+          if (story) {
+            cardData.chart.content += "\n\n" + story;
+            cardData.company.content += "\n\n" + story;
+            renderCards();
+          }
+        } else if (eventName === "market_check") {
+          const marketCheck = data?.marketCheck || {};
+          const story = data?.story || "";
+          let content = `시장 검증: ${marketCheck.agreement || ""}\n${marketCheck.reason || ""}`;
+          if (story && story.trim().length > 0 && !story.includes("스토리 생성 실패")) {
+            content += `\n\n[스토리]\n${story}`;
+          }
+          cardData.chart.content = content;
+          renderCards();
+        } else if (eventName === "peer_adjust") {
+          const peerAdjust = data?.peerAdjust || {};
+          if (peerAdjust.adjustment) {
+            cardData.peers.content = `비교군 보정:\n${peerAdjust.adjustment || ""}\n\n산업 대비:\n${peerAdjust.industry_vs_company || ""}`;
+            renderCards();
+          }
+        } else if (eventName === "final") {
+          finalEl.style.display = "block";
+          finalContentEl.textContent = String(data?.answer || "");
+          if (startBtn) startBtn.style.display = "inline-flex";
+          if (stopBtn) stopBtn.style.display = "none";
+        } else if (eventName === "error") {
+          addMessage("system", `오류: ${data?.error || "error"}\n${data?.details || ""}`.trim(), "error");
+          if (startBtn) startBtn.style.display = "inline-flex";
+          if (stopBtn) stopBtn.style.display = "none";
+        } else if (eventName === "done") {
+          if (startBtn) startBtn.style.display = "inline-flex";
+          if (stopBtn) stopBtn.style.display = "none";
+          return;
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name === "AbortError") {
+      addMessage("system", "분석이 중지되었습니다.", "info");
+    } else {
+      addMessage("system", `요청 실패: ${String(e?.message || e)}`, "error");
+    }
+    if (startBtn) startBtn.style.display = "inline-flex";
+    if (stopBtn) stopBtn.style.display = "none";
+  } finally {
+    aiAnalysisAbortController = null;
+  }
 }
 
 async function askExplain() {
@@ -3231,9 +3718,14 @@ async function runJudgement() {
 function init() {
   initSymbolAutocomplete();
   $("reloadChart").addEventListener("click", () => {
+    // 새로고침 버튼 클릭 시 현재 심볼 값으로 변경 적용
+    if (typeof window.applySymbolChange === "function") {
+      window.applySymbolChange();
+    }
     if (leftView === "screener") mountTradingViewScreener();
     else if (leftView === "company") mountTradingViewCompany();
     else if (leftView === "macro") mountMacro();
+    else if (leftView === "aiAnalysis") mountAiAnalysis();
     else mountTradingViewChart();
     addMessage("system", "왼쪽 화면을 새로고침했어요.");
   });
@@ -3241,6 +3733,7 @@ function init() {
   $("viewCompany")?.addEventListener("click", () => setLeftView("company"));
   $("viewMacro")?.addEventListener("click", () => setLeftView("macro"));
   $("viewScreener")?.addEventListener("click", () => setLeftView("screener"));
+  $("viewAiAnalysis")?.addEventListener("click", () => setLeftView("aiAnalysis"));
   $("toggleCalendar")?.addEventListener("click", () => {
     if (leftView !== "screener") return;
     calendarCollapsed = !calendarCollapsed;
@@ -3254,29 +3747,60 @@ function init() {
   // 심볼/간격이 바뀌면 즉시 재로딩(그리고 계속 30초 폴링)
   const symbolEl = $("symbol");
   const intervalEl = $("interval");
-
-  // 심볼 입력은 타이핑 중 연속 리마운트 방지(디바운스)
-  symbolEl?.addEventListener("input", () => scheduleTvRemount(400));
-  symbolEl?.addEventListener("change", () => scheduleTvRemount(0));
-  symbolEl?.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      scheduleTvRemount(0);
+  
+  // localStorage에서 심볼/간격 값 복원
+  try {
+    const savedSymbol = localStorage.getItem("last_symbol");
+    if (savedSymbol && symbolEl) {
+      symbolEl.value = savedSymbol;
     }
-  });
+    const savedInterval = localStorage.getItem("last_interval");
+    if (savedInterval && intervalEl) {
+      intervalEl.value = savedInterval;
+    }
+  } catch {}
 
-  intervalEl?.addEventListener("change", () => scheduleTvRemount(0));
-
-  // Yahoo도 심볼/간격 변경 즉시 1회 갱신
-  symbolEl?.addEventListener("change", () => {
+  // 심볼 변경 핸들러 (Enter키, 새로고침 버튼, 자동완성 선택에서만 호출)
+  window.applySymbolChange = function() {
+    scheduleTvRemount(0);
     try {
       localStorage.setItem("last_symbol", String(symbolEl.value || ""));
+      localStorage.setItem("last_interval", String(intervalEl.value || "D"));
     } catch {}
     loadYahooOhlcv().finally(() => setYahooLast(new Date().toLocaleString()));
     loadYahooConsensus();
+    
+    // 기업분석이나 AI 종합분석 뷰에서는 해당 심볼로 다시 마운트
+    if (leftView === "company") {
+      mountTradingViewCompany();
+    } else if (leftView === "aiAnalysis") {
+      mountAiAnalysis();
+    }
+  };
+
+  // Enter 키를 눌렀을 때만 심볼 변경 적용
+  symbolEl?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      window.applySymbolChange();
+    }
   });
+
+  // change 이벤트는 제거 (타이핑만으로는 변경되지 않도록)
+
   intervalEl?.addEventListener("change", () => {
+    scheduleTvRemount(0);
+    try {
+      localStorage.setItem("last_interval", String(intervalEl.value || "D"));
+    } catch {}
     loadYahooOhlcv().finally(() => setYahooLast(new Date().toLocaleString()));
+    
+    // 기업분석이나 AI 종합분석 뷰에서는 다시 마운트
+    if (leftView === "company") {
+      mountTradingViewCompany();
+    } else if (leftView === "aiAnalysis") {
+      mountAiAnalysis();
+    }
   });
 
   $("ask").addEventListener("click", askExplain);
@@ -3381,12 +3905,6 @@ function init() {
     openMyPage();
   });
 
-  $("portfolioBtn")?.addEventListener("click", () => {
-    if (!firebaseSignedIn()) {
-      const next = encodeURIComponent("/portfolio.html");
-      location.href = `/login.html?next=${next}`;
-      return;
-    }
     openMyPage();
   });
 

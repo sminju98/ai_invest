@@ -66,7 +66,7 @@ function makeKeys({ symbol, name_en, name_ko, aliases_en, aliases_ko }) {
 }
 
 async function fetchJson(url) {
-  const resp = await fetch(url, { headers: { "User-Agent": "GOYO-AI-Invest" } });
+  const resp = await fetch(url, { headers: { "User-Agent": "AI-Invest" } });
   if (!resp.ok) throw new Error(`fetch failed: ${resp.status} ${url}`);
   return await resp.json();
 }

@@ -747,6 +747,62 @@ body {
   background: rgba(255, 255, 255, 0.02);
 }
 
+/* AI 종합 분석 */
+.aiAnalysisContainer {
+  color: var(--text);
+}
+.aiAnalysisCards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 16px;
+}
+.aiAnalysisCard {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+}
+.aiAnalysisStatus {
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.aiAnalysisStatus.status-waiting {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--muted);
+}
+.aiAnalysisStatus.status-progress {
+  background: rgba(106, 168, 255, 0.2);
+  color: var(--accent);
+}
+.aiAnalysisStatus.status-done {
+  background: rgba(106, 255, 177, 0.2);
+  color: #6affb1;
+}
+.aiAnalysisSummary {
+  margin-bottom: 8px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 4px;
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.aiAnalysisContent {
+  font-size: 13px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+.aiAnalysisFinal {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-top: 24px;
+}
+
 @media (max-width: 980px) {
   .screenerSplit {
     grid-template-columns: 1fr;
@@ -755,6 +811,9 @@ body {
   .macroGrid {
     grid-template-columns: 1fr;
     grid-template-rows: 1fr 1fr;
+  }
+  .aiAnalysisCards {
+    grid-template-columns: 1fr;
   }
 }
 

@@ -468,7 +468,18 @@ async function fetchYahooQuoteSummary(symbolRaw, modules) {
   const data = await (async () => {
     // 1) crumb 없이 시도
     const first = await httpsGetText(urlNoCrumb, { "User-Agent": "Mozilla/5.0", "Accept": "application/json" });
-    if (first.status >= 200 && first.status < 300) return JSON.parse(first.body || "{}");
+    if (first.status >= 200 && first.status < 300) {
+      const parsed = JSON.parse(first.body || "{}");
+      // Yahoo API가 에러 객체를 응답 본문에 포함하는 경우 체크
+      if (parsed?.quoteSummary?.error) {
+        const err = parsed.quoteSummary.error;
+        const e = new Error(`Yahoo quoteSummary API error: ${err.code || "unknown"} - ${err.description || "unknown"}`);
+        e.status = first.status;
+        e.details = JSON.stringify(err);
+        throw e;
+      }
+      return parsed;
+    }
     const errText = first.body || "";
 
     // 2) Invalid Crumb(401)인 경우에만 crumb/cookie 획득 후 재시도
@@ -490,7 +501,16 @@ async function fetchYahooQuoteSummary(symbolRaw, modules) {
       e.details = t.slice(0, 2000);
       throw e;
     }
-    return JSON.parse(second.body || "{}");
+    const parsed = JSON.parse(second.body || "{}");
+    // Yahoo API가 에러 객체를 응답 본문에 포함하는 경우 체크
+    if (parsed?.quoteSummary?.error) {
+      const err = parsed.quoteSummary.error;
+      const e = new Error(`Yahoo quoteSummary API error: ${err.code || "unknown"} - ${err.description || "unknown"}`);
+      e.status = second.status;
+      e.details = JSON.stringify(err);
+      throw e;
+    }
+    return parsed;
   })();
 
   return data?.quoteSummary?.result?.[0] || {};
@@ -753,14 +773,28 @@ function extractDeltaFromChatCompletionsChunk(data) {
 }
 
 function extractJsonObject(text) {
-  const s = String(text || "");
-  const start = s.indexOf("{");
-  const end = s.lastIndexOf("}");
+  const s = String(text || "").trim();
+  
+  // 마크다운 코드 블록 제거 (```json ... ```)
+  let cleaned = s.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
+  
+  // 여러 JSON 객체가 있을 수 있으므로 가장 큰 것을 찾음
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
   if (start >= 0 && end > start) {
-    const candidate = s.slice(start, end + 1);
+    const candidate = cleaned.slice(start, end + 1);
     try {
       return JSON.parse(candidate);
-    } catch {
+    } catch (e) {
+      // 중첩된 JSON 시도 (내부의 첫 번째 유효한 JSON 찾기)
+      const nestedMatch = candidate.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/);
+      if (nestedMatch) {
+        try {
+          return JSON.parse(nestedMatch[0]);
+        } catch {
+          // ignore
+        }
+      }
       return null;
     }
   }
@@ -1330,11 +1364,27 @@ async function gptSignalExtraction({ symbolRaw, question, rag }) {
       max_completion_tokens: 700
     })
   });
-  if (!resp.ok) throw new Error(`GPT signal extraction failed: ${resp.status}`);
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    throw new Error(`GPT signal extraction failed: ${resp.status} ${errText.slice(0, 500)}`);
+  }
   const data = await resp.json();
   const text = extractAssistantTextFromChatCompletions(data);
   const json = extractJsonObject(text);
-  if (!json) throw new Error("Signal extraction JSON parse failed");
+  
+  // JSON 파싱 실패 시 기본값 반환 (폴백)
+  if (!json) {
+    console.warn("Signal extraction JSON parse failed, using fallback. Text:", text.slice(0, 200));
+    // 텍스트에서 키워드로 신호 추출 시도
+    const lowerText = text.toLowerCase();
+    return {
+      financial_signal: lowerText.includes("재무") || lowerText.includes("financial") ? text.slice(0, 300) : "",
+      event_signal: lowerText.includes("이벤트") || lowerText.includes("event") || lowerText.includes("뉴스") || lowerText.includes("news") ? text.slice(0, 300) : "",
+      market_signal: lowerText.includes("시장") || lowerText.includes("market") || lowerText.includes("차트") || lowerText.includes("chart") ? text.slice(0, 300) : "",
+      peer_signal: lowerText.includes("비교") || lowerText.includes("peer") || lowerText.includes("관련주") ? text.slice(0, 300) : ""
+    };
+  }
+  
   return {
     financial_signal: String(json.financial_signal || ""),
     event_signal: String(json.event_signal || ""),
@@ -1372,7 +1422,9 @@ async function gptStoryLinking({ symbolRaw, signals }) {
   });
   if (!resp.ok) throw new Error(`GPT story linking failed: ${resp.status}`);
   const data = await resp.json();
-  return extractAssistantTextFromChatCompletions(data);
+  const story = extractAssistantTextFromChatCompletions(data);
+  // 빈 문자열이나 너무 짧은 응답이면 null 반환 (호출자가 처리)
+  return story && String(story).trim().length >= 10 ? story : null;
 }
 
 async function gptMarketAgreement({ symbolRaw, signals, story }) {
@@ -1733,13 +1785,26 @@ async function handleJudgeStream(req, res) {
 
     // 2) 스토리 생성
     sseEvent(res, { event: "status", data: { stage: "story_link" } });
-    const story = await gptStoryLinking({ symbolRaw, signals });
+    let story = await gptStoryLinking({ symbolRaw, signals });
+    // story가 비어있거나 너무 짧으면 기본값 제공
+    if (!story || String(story).trim().length < 10) {
+      story = "신호 간 인과관계 분석 중... (스토리 생성 실패로 시장 검증은 제한적입니다)";
+    }
     sseEvent(res, { event: "story", data: { story } });
 
     // 3) 시장 검증
     sseEvent(res, { event: "status", data: { stage: "market_check" } });
-    const marketCheck = await gptMarketAgreement({ symbolRaw, signals, story });
-    sseEvent(res, { event: "market_check", data: { marketCheck } });
+    let marketCheck;
+    // story가 유효한 경우에만 시장 검증 수행
+    if (story && String(story).trim().length >= 20 && !story.includes("스토리 생성 실패")) {
+      marketCheck = await gptMarketAgreement({ symbolRaw, signals, story });
+    } else {
+      marketCheck = {
+        agreement: "부분 동의",
+        reason: "스토리 생성이 불완전하여 시장 검증을 건너뜁니다. 시장 신호만으로는 검증이 제한적입니다."
+      };
+    }
+    sseEvent(res, { event: "market_check", data: { marketCheck, story } });
 
     // 4) 비교군 보정
     sseEvent(res, { event: "status", data: { stage: "peer_adjust" } });

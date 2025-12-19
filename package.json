@@ -7,7 +7,7 @@
     "start": "node server.mjs",
     "import:ticker_master": "node scripts/import_us_stock_symbols.mjs",
     "firebase:emulators": "npx firebase emulators:start --only hosting,functions",
-    "firebase:deploy": "npx firebase deploy"
+    "firebase:deploy": "npx firebase deploy --only hosting,functions"
   },
   "dependencies": {
     "firebase-admin": "^12.7.0"

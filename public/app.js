@@ -2174,8 +2174,12 @@ let latestMacroNews = null;
 const MACRO_SYMBOLS = [
   // 지수
   { symbol: "^GSPC", label: "S&P 500", group: "지수" },
-  { symbol: "^IXIC", label: "NASDAQ", group: "지수" },
-  { symbol: "^DJI", label: "DOW", group: "지수" },
+  { symbol: "^DJI", label: "Dow Jones Industrial Average", group: "지수" },
+  { symbol: "^IXIC", label: "NASDAQ Composite", group: "지수" },
+  { symbol: "^RUT", label: "Russell 2000", group: "지수" },
+  { symbol: "^FTSE", label: "FTSE 100", group: "지수" },
+  { symbol: "^N225", label: "Nikkei 225", group: "지수" },
+  { symbol: "^TX60", label: "S&P/TSX 60", group: "지수" },
   { symbol: "^VIX", label: "VIX", group: "지수" },
   // 통화
   { symbol: "DX-Y.NYB", label: "달러인덱스", group: "통화" },
@@ -2592,11 +2596,22 @@ async function fetchYahooIndices() {
   const qs = new URLSearchParams({ symbols });
   const resp = await fetch(`/api/yahoo/indices?${qs.toString()}`);
   const data = await resp.json().catch(() => ({}));
+  
+  // 일부 심볼이 실패해도 성공한 것들은 사용
+  if (data?.ok && Array.isArray(data.rows)) {
+    if (data.errors && data.errors.length > 0) {
+      console.warn("[매크로] 일부 지수 데이터를 불러오지 못했습니다:", data.errors.map(e => `${e.symbol} (${e.error})`).join(", "));
+    }
+    return data;
+  }
+  
+  // 전체 실패인 경우에만 에러
   if (!resp.ok || !data?.ok) {
     const err = new Error(data?.error || resp.statusText || "Yahoo error");
     err.details = data?.details || "";
     throw err;
   }
+  
   return data;
 }
 
@@ -2620,20 +2635,65 @@ async function loadMacro() {
 
   const root = $("leftWidgetRoot");
   if (!root) return;
+  const idxTopEl = root.querySelector("[data-macro='indicesTop']");
   const idxEl = root.querySelector("[data-macro='indices']");
   const newsEl = root.querySelector("[data-macro='news']");
   const badgeEl = root.querySelector("[data-macro='badge']");
 
   try {
     if (badgeEl) badgeEl.textContent = "불러오는 중…";
-    const [indices, news] = await Promise.all([fetchYahooIndices(), fetchYahooMacroNews()]);
+    let indices, news;
+    try {
+      [indices, news] = await Promise.all([fetchYahooIndices(), fetchYahooMacroNews()]);
+    } catch (e) {
+      console.error("[매크로] 데이터 불러오기 실패:", e);
+      // 일부 실패해도 계속 진행
+      indices = indices || { rows: [], errors: [] };
+      news = news || { items: [] };
+    }
     latestMacroIndices = Array.isArray(indices?.rows) ? indices.rows : [];
     latestMacroNews = Array.isArray(news?.items) ? news.items : [];
+    
+    // 일부 심볼 실패 경고
+    if (indices?.errors && indices.errors.length > 0) {
+      console.warn("[매크로] 일부 지수 데이터를 불러오지 못했습니다:", indices.errors.map(e => `${e.symbol} (${e.error})`).join(", "));
+    }
 
-    if (idxEl) {
       const rows = Array.isArray(indices?.rows) ? indices.rows : [];
       const bySymbol = new Map(rows.map((r) => [String(r?.symbol || ""), r]));
-      const groups = ["지수", "통화", "원자재", "선물", "채권"];
+
+    // 지수를 맨 위에 크게 표시
+    if (idxTopEl) {
+      const indexItems = MACRO_SYMBOLS.filter((s) => s.group === "지수")
+        .map((s) => ({ ...s, row: bySymbol.get(s.symbol) || null }))
+        .filter((x) => x.row);
+      
+      if (indexItems.length > 0) {
+        const indexLines = indexItems
+          .map(({ label, row }) => {
+            const price = formatNum(row.regularMarketPrice);
+            const changeValue = Number(row.regularMarketChange);
+            const change = changeValue > 0 ? `+${formatNum(changeValue)}` : formatNum(changeValue);
+            const pct = formatPct(row.regularMarketChangePercent);
+            const signClass = changeValue > 0 ? "pos" : changeValue < 0 ? "neg" : "";
+            return `
+              <div style="margin-bottom: 12px;">
+                <div style="font-size: 14px; font-weight: 600; margin-bottom: 4px; color: var(--text);">${label}</div>
+                <div style="font-size: 20px; font-weight: 700; margin-bottom: 2px; color: var(--text);">${price}</div>
+                <div class="${signClass}" style="font-size: 14px; font-weight: 600;">${change} (${pct})</div>
+              </div>
+            `;
+          })
+          .join("");
+        idxTopEl.innerHTML = `<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">${indexLines}</div>`;
+      } else {
+        idxTopEl.textContent = "지수 데이터를 불러오는 중…";
+      }
+    }
+
+    // 나머지 지표는 시장 지표 패널에 표시 (지수 제외)
+    if (idxEl) {
+      const groups = ["통화", "원자재", "선물", "채권"];
 
       const html = groups
         .map((g) => {
@@ -2641,6 +2701,7 @@ async function loadMacro() {
             .map((s) => ({ ...s, row: bySymbol.get(s.symbol) || null }))
             .filter((x) => x.row);
           if (!items.length) return "";
+          
           return (
             `<div class="macroNewsMeta" style="margin: 2px 0 8px; font-weight: 700;">${g}</div>` +
             `<table class="macroTable">` +
@@ -2659,6 +2720,7 @@ async function loadMacro() {
             `<div style="height: 10px"></div>`
           );
         })
+        .filter(Boolean)
         .join("");
 
       idxEl.innerHTML = html || "데이터 없음";
@@ -2725,14 +2787,21 @@ async function loadRecentMarketInsight() {
     const doc = snap.docs[0];
     if (!doc) return null;
     const data = doc.data();
-    const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.asOf || Date.now());
+    const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : (data.createdAt ? new Date(data.createdAt) : new Date(data.asOf || Date.now()));
     if (createdAt < fiveMinutesAgo) return null;
+    console.log("[Market Insight] DB에서 5분 이내 데이터 발견:", {
+      createdAt: createdAt.toISOString(),
+      age: Math.round((Date.now() - createdAt.getTime()) / 1000),
+      seconds: "초"
+    });
     return {
       insight: data.insight || "",
       asOf: data.asOf || createdAt.toISOString(),
-      cached: true
+      cached: true,
+      mode: data.mode || "openai"
     };
-  } catch {
+  } catch (e) {
+    console.error("[Market Insight] DB 조회 실패:", e);
     return null;
   }
 }
@@ -2752,8 +2821,11 @@ async function loadMarketInsight({ force } = {}) {
     if (!force) {
       const recent = await loadRecentMarketInsight();
       if (recent) {
+        console.log("[Market Insight] DB 캐시 사용, 서버 호출 건너뜀");
+        const mode = recent.mode || "openai";
+        const modeText = mode === "openai" ? "GPT" : mode === "fallback" ? "Fallback" : mode === "mock" ? "Mock" : "Unknown";
         el.textContent = String(recent.insight || "").trim() || "(빈 응답)";
-        if (metaEl) metaEl.textContent = `GPT · cached · ${new Date(recent.asOf || Date.now()).toLocaleString()}`;
+        if (metaEl) metaEl.textContent = `${modeText} · DB cached · ${new Date(recent.asOf || Date.now()).toLocaleString()}`;
         return;
       }
     }
@@ -2767,11 +2839,24 @@ async function loadMarketInsight({ force } = {}) {
     }
 
     const out = await fetchMarketInsight({ indices: latestMacroIndices || [], news: latestMacroNews || [], force: !!force });
+    
+    // mode에 따라 메타 정보 표시
+    const mode = out.mode || "unknown";
+    const modeText = mode === "openai" ? "GPT" : mode === "fallback" ? "Fallback" : mode === "mock" ? "Mock" : "Unknown";
+    const statusText = out.cached ? "cached" : "updated";
+    
     el.textContent = String(out.insight || "").trim() || "(빈 응답)";
-    if (metaEl) metaEl.textContent = `GPT · ${out.cached ? "cached" : "updated"} · ${new Date(out.asOf || Date.now()).toLocaleString()}`;
+    if (metaEl) {
+      if (mode === "fallback" && out.error) {
+        metaEl.textContent = `${modeText} · ${statusText} · ${new Date(out.asOf || Date.now()).toLocaleString()} (오류: ${out.errorStatus || "알 수 없음"})`;
+        console.warn("[Market Insight] Fallback 모드:", out.error, out.details);
+      } else {
+        metaEl.textContent = `${modeText} · ${statusText} · ${new Date(out.asOf || Date.now()).toLocaleString()}`;
+      }
+    }
 
-    // cloud save: Market Insight가 새로 생성/갱신될 때마다 저장
-    if (firebaseSignedIn() && firebaseReady() && cloudSaveEnabled()) {
+    // cloud save: Market Insight가 새로 생성/갱신될 때마다 저장 (cached가 아닐 때만)
+    if (!out.cached && firebaseSignedIn() && firebaseReady() && cloudSaveEnabled()) {
       try {
         const u = userDocRef();
         if (u) {
@@ -2792,17 +2877,21 @@ async function loadMarketInsight({ force } = {}) {
           await u.collection("insights").add({
             type: "market_insight",
             asOf: out.asOf || new Date().toISOString(),
-            cached: !!out.cached,
+            mode: out.mode || "openai",
+            cached: false,
             force: !!force,
             insight: clampCloudText(String(out.insight || ""), 40_000),
             indices: slimIndices,
             news: slimNews,
             createdAt: firebase.firestore.FieldValue.serverTimestamp()
           });
+          console.log("[Market Insight] DB에 새 데이터 저장 완료");
         }
-      } catch {
-        // ignore
+      } catch (e) {
+        console.error("[Market Insight] DB 저장 실패:", e);
       }
+    } else if (out.cached) {
+      console.log("[Market Insight] 캐시된 데이터이므로 DB 저장 건너뜀");
     }
   } catch (e) {
     el.textContent = `Market Insight 오류: ${String(e?.message || e)}\n${e?.details || ""}`.trim();
@@ -2819,6 +2908,12 @@ function mountMacro() {
 
   root.innerHTML = `
     <div class="macroGrid">
+      <div class="macroPanel macroPanel--span" style="grid-column: 1 / -1;">
+        <div class="macroPanel__head">
+          <div class="macroPanel__title">주요 지수</div>
+        </div>
+        <div class="macroPanel__body" data-macro="indicesTop" style="font-size: 16px; padding: 16px; line-height: 1.8;">불러오는 중…</div>
+      </div>
       <div class="macroPanel macroPanel--span">
         <div class="macroPanel__head">
           <div class="macroPanel__title">Market Insight</div>
@@ -2888,6 +2983,61 @@ async function loadRecentAiAnalysis(symbol) {
   }
 }
 
+async function loadRecentPortfolioAnalysis() {
+  if (!firebaseSignedIn() || !firebaseReady() || !cloudSaveEnabled()) return null;
+  try {
+    const u = userDocRef();
+    if (!u) return null;
+    // 최근 1일 내 포트폴리오 분석 확인
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const snap = await u.collection("portfolio_analyses")
+      .orderBy("createdAt", "desc")
+      .limit(1)
+      .get();
+    const doc = snap.docs[0];
+    if (!doc) return null;
+    const data = doc.data();
+    const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : new Date();
+    if (createdAt < oneDayAgo) return null;
+    return {
+      id: doc.id,
+      answer: data.answer || "",
+      positions: data.positions || [],
+      memo: data.memo || "",
+      createdAt: createdAt.toISOString()
+    };
+  } catch (e) {
+    console.error("[Portfolio Analysis] DB 조회 실패:", e);
+    return null;
+  }
+}
+
+async function loadAndDisplayRecentPortfolioAnalysis() {
+  const recent = await loadRecentPortfolioAnalysis();
+  if (!recent) return;
+
+  const cardsEl = $("aiAnalysisCards");
+  if (!cardsEl) return;
+
+  // 포트폴리오 분석 카드 추가
+  const portfolioCard = document.createElement("div");
+  portfolioCard.className = "aiAnalysisCard";
+  portfolioCard.setAttribute("data-card", "portfolio");
+  portfolioCard.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+      <div style="font-size: 16px; font-weight: 700;">포트폴리오 분석</div>
+      <div class="aiAnalysisStatus status-done">완료</div>
+    </div>
+    <div style="font-size: 12px; color: #999; margin-bottom: 8px;">
+      ${new Date(recent.createdAt).toLocaleString()} · 최근 1일 내 분석
+    </div>
+    <div class="aiAnalysisSummary" style="white-space: pre-wrap;">${escapeHtml(recent.answer || "(분석 결과 없음)")}</div>
+  `;
+
+  // 카드 목록의 맨 위에 추가
+  cardsEl.insertBefore(portfolioCard, cardsEl.firstChild);
+}
+
 async function restoreAiAnalysisFromRecent(recent) {
   if (!recent) return false;
   const cardsEl = $("aiAnalysisCards");
@@ -2919,14 +3069,15 @@ async function restoreAiAnalysisFromRecent(recent) {
     cardData.peers.summary = signals.peer_signal;
   }
 
-  const story = recent.story || "";
-  const marketCheck = recent.marketCheck || {};
-  if (marketCheck.reason) {
-    cardData.chart.content = `시장 검증: ${marketCheck.agreement || ""}\n${marketCheck.reason || ""}`;
-    if (story) {
-      cardData.chart.content += `\n\n[스토리]\n${story}`;
-    }
-  }
+  // 차트와 기업분석 카드는 독립 분석 이벤트에서 업데이트됨
+  // const story = recent.story || "";
+  // const marketCheck = recent.marketCheck || {};
+  // if (marketCheck.reason) {
+  //   cardData.chart.content = `시장 검증: ${marketCheck.agreement || ""}\n${marketCheck.reason || ""}`;
+  //   if (story) {
+  //     cardData.chart.content += `\n\n[스토리]\n${story}`;
+  //   }
+  // }
 
   const peerAdjust = recent.peerAdjust || {};
   if (peerAdjust.adjustment) {
@@ -2989,9 +3140,13 @@ async function mountAiAnalysis() {
       <div id="aiAnalysisCards" class="aiAnalysisCards" style="display: grid; gap: 16px;">
         <!-- 카드들이 여기에 동적으로 추가됩니다 -->
       </div>
-      <div id="aiAnalysisFinal" class="aiAnalysisFinal" style="margin-top: 24px; padding: 16px; background: #f5f5f5; border-radius: 8px; display: none;">
-        <div style="font-size: 16px; font-weight: 700; margin-bottom: 12px;">조건부 종합 판단</div>
-        <div id="aiAnalysisFinalContent" style="white-space: pre-wrap; line-height: 1.6;"></div>
+      <div id="aiAnalysisFinal" class="aiAnalysisFinal" style="margin-top: 24px; display: none;">
+        <div style="font-size: 16px; font-weight: 700; margin-bottom: 12px; color: var(--text);">조건부 종합 판단</div>
+        <div id="aiAnalysisFinalContent" style="color: var(--text);"></div>
+        <div id="aiAnalysisRawData" style="margin-top: 16px; display: none;">
+          <button id="aiAnalysisRawDataToggle" class="btn btn--ghost" style="margin-bottom: 8px; font-size: 12px;">원문 수치 데이터 보기</button>
+          <div id="aiAnalysisRawDataContent" style="display: none; padding: 12px; background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border); border-radius: 8px; font-size: 12px; font-family: monospace; white-space: pre-wrap; overflow-x: auto; max-height: 400px; overflow-y: auto;"></div>
+        </div>
       </div>
     </div>
   `;
@@ -3007,6 +3162,9 @@ async function mountAiAnalysis() {
       }
     }
   }
+
+  // 최근 1일 내 포트폴리오 분석 결과 확인 및 표시
+  await loadAndDisplayRecentPortfolioAnalysis();
 
   $("aiAnalysisStart")?.addEventListener("click", () => startAiAnalysis());
   $("aiAnalysisStop")?.addEventListener("click", () => stopAiAnalysis());
@@ -3116,8 +3274,10 @@ async function startAiAnalysis() {
     screener: { title: "스크리너", status: (leftView === "screener" || leftView === "aiAnalysis") ? "분석 중..." : "대기 중...", content: "", summary: "" },
     chart: { title: "차트", status: (leftView === "chart" || leftView === "aiAnalysis") ? "분석 중..." : "대기 중...", content: "", summary: "" },
     company: { title: "기업분석", status: (leftView === "company" || leftView === "aiAnalysis") ? "분석 중..." : "대기 중...", content: "", summary: "" },
+    consensus: { title: "컨센서스", status: leftView === "aiAnalysis" ? "분석 중..." : "대기 중...", content: "", summary: "" },
     news: { title: "최근 이슈", status: leftView === "aiAnalysis" ? "분석 중..." : "대기 중...", content: "", summary: "" },
-    peers: { title: "관련주", status: leftView === "aiAnalysis" ? "분석 중..." : "대기 중...", content: "", summary: "" }
+    peers: { title: "관련주", status: leftView === "aiAnalysis" ? "분석 중..." : "대기 중...", content: "", summary: "" },
+    filings: { title: "공시", status: leftView === "aiAnalysis" ? "분석 중..." : "대기 중...", content: "", summary: "" }
   };
 
   function renderCards() {
@@ -3350,11 +3510,142 @@ async function startAiAnalysis() {
             cardData.peers.content = `비교군 보정:\n${peerAdjust.adjustment || ""}\n\n산업 대비:\n${peerAdjust.industry_vs_company || ""}`;
             renderCards();
           }
+        } else if (eventName === "chart_card") {
+          const card = data?.card;
+          if (card) {
+            cardData.chart.status = "완료";
+            cardData.chart.summary = card.key_insight || "";
+            cardData.chart.content = `가격 위치: ${card.price_position || ""}\n\n기술적 요약: ${card.technical_summary || ""}\n\n의미: ${card.what_it_means_for_judge || ""}`;
+            renderCards();
+          }
+        } else if (eventName === "company_card") {
+          const card = data?.card;
+          if (card) {
+            cardData.company.status = "완료";
+            cardData.company.summary = card.key_insight || "";
+            cardData.company.content = `재무 체력: ${card.financial_strength || ""}\n\n밸류에이션 요약: ${card.valuation_summary || ""}\n\n의미: ${card.what_it_means_for_judge || ""}`;
+            renderCards();
+          }
+        } else if (eventName === "consensus_card") {
+          const card = data?.card;
+          if (card) {
+            cardData.consensus.status = "완료";
+            cardData.consensus.summary = card.key_insight || "";
+            const directionBadge = card.consensus_direction === "POSITIVE" ? "긍정" : card.consensus_direction === "NEGATIVE" ? "부정" : card.consensus_direction === "MIXED" ? "혼재" : "중립";
+            const pricingState = card.expectation_pricing_state === "NOT_PRICED_IN" ? "반영 안됨" : card.expectation_pricing_state === "PARTIALLY_PRICED" ? "부분 반영" : card.expectation_pricing_state === "MOSTLY_PRICED" ? "대부분 반영" : "과도 반영";
+            cardData.consensus.content = `방향: ${directionBadge}\n가격 반영 상태: ${pricingState}\n분석가 일치도: ${card.analyst_agreement_level}\n\n의미: ${card.what_it_means_for_judge || ""}\n\n주의사항:\n${(card.cautions || []).map(c => `- ${c}`).join("\n")}`;
+            renderCards();
+          }
+        } else if (eventName === "sec_filing_card") {
+          const card = data?.card;
+          if (card) {
+            cardData.filings.status = "완료";
+            cardData.filings.summary = card.oneLineSummary || "";
+            const sentimentBadge = card.sentiment === "positive" ? "긍정" : card.sentiment === "caution" ? "주의" : "중립";
+            cardData.filings.content = `감정: ${sentimentBadge}\n\n의미: ${card.meaning || ""}\n\n주의: ${card.risk || ""}\n\n판단: ${card.finalJudgement || ""}`;
+            renderCards();
+          }
         } else if (eventName === "final") {
           finalEl.style.display = "block";
-          finalContentEl.textContent = String(data?.answer || "");
+          
+          // JSON 스키마가 있으면 구조화하여 표시
+          const json = data?.json;
+          const rawData = data?.rawData;
+          
+          if (json && json.final_judgment) {
+            // 구조화된 표시 생성
+            const verdict = json.final_judgment.verdict || "WAIT";
+            const confidence = json.final_judgment.confidence || "MEDIUM";
+            const verdictText = {
+              "WAIT": "관망",
+              "BUY": "매수 고려",
+              "ACCUMULATE": "누적 매수",
+              "REDUCE": "감소",
+              "AVOID": "회피"
+            }[verdict] || verdict;
+            const confidenceText = {
+              "LOW": "낮음",
+              "MEDIUM": "보통",
+              "HIGH": "높음"
+            }[confidence] || confidence;
+            
+            let html = `<div style="margin-bottom: 16px;">`;
+            html += `<div style="font-size: 18px; font-weight: 700; margin-bottom: 8px;">AI 종합 판단: ${verdictText}</div>`;
+            html += `<div style="font-size: 14px; color: var(--muted); margin-bottom: 12px;">확신도: ${confidenceText}</div>`;
+            
+            if (json.one_line_summary) {
+              html += `<div style="margin-bottom: 16px; padding: 12px; background: rgba(255, 255, 255, 0.03); border-radius: 8px;">`;
+              html += `<div style="font-size: 14px; font-weight: 600; margin-bottom: 4px;">한 줄 요약</div>`;
+              html += `<div style="font-size: 13px; line-height: 1.6;">${escapeHtml(json.one_line_summary)}</div>`;
+              html += `</div>`;
+            }
+            
+            if (json.decision_stack_reasoning) {
+              html += `<div style="margin-bottom: 16px;">`;
+              html += `<div style="font-size: 14px; font-weight: 600; margin-bottom: 8px;">판단 근거</div>`;
+              const reasoning = json.decision_stack_reasoning;
+              if (reasoning.macro) html += `<div style="margin-bottom: 8px; padding: 8px; background: rgba(255, 255, 255, 0.02); border-radius: 6px;"><div style="font-size: 12px; color: var(--muted); margin-bottom: 4px;">시장 컨디션</div><div style="font-size: 13px; line-height: 1.5;">${escapeHtml(reasoning.macro)}</div></div>`;
+              if (reasoning.quality) html += `<div style="margin-bottom: 8px; padding: 8px; background: rgba(255, 255, 255, 0.02); border-radius: 6px;"><div style="font-size: 12px; color: var(--muted); margin-bottom: 4px;">기업 체력</div><div style="font-size: 13px; line-height: 1.5;">${escapeHtml(reasoning.quality)}</div></div>`;
+              if (reasoning.timing) html += `<div style="margin-bottom: 8px; padding: 8px; background: rgba(255, 255, 255, 0.02); border-radius: 6px;"><div style="font-size: 12px; color: var(--muted); margin-bottom: 4px;">가격 위치</div><div style="font-size: 13px; line-height: 1.5;">${escapeHtml(reasoning.timing)}</div></div>`;
+              if (reasoning.catalyst_risk) html += `<div style="margin-bottom: 8px; padding: 8px; background: rgba(255, 255, 255, 0.02); border-radius: 6px;"><div style="font-size: 12px; color: var(--muted); margin-bottom: 4px;">뉴스/이벤트</div><div style="font-size: 13px; line-height: 1.5;">${escapeHtml(reasoning.catalyst_risk)}</div></div>`;
+              if (reasoning.relative_choice) html += `<div style="margin-bottom: 8px; padding: 8px; background: rgba(255, 255, 255, 0.02); border-radius: 6px;"><div style="font-size: 12px; color: var(--muted); margin-bottom: 4px;">대안 비교</div><div style="font-size: 13px; line-height: 1.5;">${escapeHtml(reasoning.relative_choice)}</div></div>`;
+              html += `</div>`;
+            }
+            
+            if (json.action_guidance) {
+              html += `<div style="margin-bottom: 16px; padding: 12px; background: rgba(106, 168, 255, 0.1); border-radius: 8px; border: 1px solid rgba(106, 168, 255, 0.3);">`;
+              html += `<div style="font-size: 14px; font-weight: 600; margin-bottom: 8px;">지금 할 수 있는 선택지</div>`;
+              html += `<div style="font-size: 13px; line-height: 1.6; margin-bottom: 8px;">${escapeHtml(json.action_guidance.recommended_action || "")}</div>`;
+              if (Array.isArray(json.action_guidance.conditions) && json.action_guidance.conditions.length > 0) {
+                html += `<div style="font-size: 12px; color: var(--muted); margin-top: 8px;">조건:</div>`;
+                json.action_guidance.conditions.forEach(cond => {
+                  html += `<div style="font-size: 12px; margin-left: 12px; margin-top: 4px;">• ${escapeHtml(cond)}</div>`;
+                });
+              }
+              html += `</div>`;
+            }
+            
+            if (Array.isArray(json.downside_scenarios) && json.downside_scenarios.length > 0) {
+              html += `<div style="margin-bottom: 16px; padding: 12px; background: rgba(255, 106, 106, 0.08); border-radius: 8px; border: 1px solid rgba(255, 106, 106, 0.2);">`;
+              html += `<div style="font-size: 14px; font-weight: 600; margin-bottom: 8px;">하방/실패 시나리오</div>`;
+              json.downside_scenarios.forEach(scenario => {
+                html += `<div style="font-size: 13px; line-height: 1.6; margin-bottom: 4px;">• ${escapeHtml(scenario)}</div>`;
+              });
+              html += `</div>`;
+            }
+            
+            // 마크다운 요약도 표시
+            if (json.markdown_summary) {
+              html += `<div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border);">`;
+              html += `<div style="white-space: pre-wrap; line-height: 1.6; font-size: 13px;">${escapeHtml(json.markdown_summary)}</div>`;
+              html += `</div>`;
+            }
+            
+            html += `</div>`;
+            finalContentEl.innerHTML = html;
+          } else {
+            // JSON이 없으면 마크다운만 표시
+            finalContentEl.innerHTML = `<div style="white-space: pre-wrap; line-height: 1.6;">${escapeHtml(String(data?.answer || ""))}</div>`;
+          }
+          
+          // 원문 수치 데이터 표시
+          const rawDataEl = $("aiAnalysisRawData");
+          const rawDataContentEl = $("aiAnalysisRawDataContent");
+          const rawDataToggleBtn = $("aiAnalysisRawDataToggle");
+          if (rawData && rawDataEl && rawDataContentEl && rawDataToggleBtn) {
+            rawDataEl.style.display = "block";
+            rawDataContentEl.textContent = JSON.stringify(rawData, null, 2);
+            rawDataToggleBtn.addEventListener("click", () => {
+              const isVisible = rawDataContentEl.style.display !== "none";
+              rawDataContentEl.style.display = isVisible ? "none" : "block";
+              rawDataToggleBtn.textContent = isVisible ? "원문 수치 데이터 보기" : "원문 수치 데이터 숨기";
+            });
+          }
+          
           if (startBtn) startBtn.style.display = "inline-flex";
           if (stopBtn) stopBtn.style.display = "none";
+          // 종합 판단이 표시되면 종합 분석 카드 제거
+          renderCards();
         } else if (eventName === "error") {
           console.error("AI 분석 에러:", data);
           const errorMsg = `오류: ${data?.error || "error"}\n${data?.details || ""}`.trim();

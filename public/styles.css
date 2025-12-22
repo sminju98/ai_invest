@@ -796,11 +796,17 @@ body {
   line-height: 1.5;
 }
 .aiAnalysisFinal {
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.02);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 16px;
   margin-top: 24px;
+  color: var(--text);
+}
+.aiAnalysisFinalContent {
+  color: var(--text);
+  white-space: pre-wrap;
+  line-height: 1.6;
 }
 
 @media (max-width: 980px) {

@@ -52,7 +52,7 @@ function normalizeOpenAIModel(raw) {
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 const OPENAI_MODEL = normalizeOpenAIModel(process.env.OPENAI_MODEL);
-const OPENAI_PORTFOLIO_MODEL = process.env.OPENAI_PORTFOLIO_MODEL || "gpt-4.1-mini";
+const OPENAI_PORTFOLIO_MODEL = process.env.OPENAI_PORTFOLIO_MODEL || "gpt-5-mini";
 
 const PERPLEXITY_API_KEY = process.env.PERPLEXITY_API_KEY || "";
 const PERPLEXITY_BASE_URL = (process.env.PERPLEXITY_BASE_URL || "https://api.perplexity.ai").replace(/\/+$/, "");
@@ -857,7 +857,7 @@ async function perplexityGroundingJSON({ query, symbol, view }) {
         { role: "user", content: user }
       ],
       temperature: 0.0,
-      max_tokens: 700
+      max_completion_tokens: 700
     })
   });
 
@@ -975,12 +975,12 @@ async function gptVerifier({ draft }) {
     method: "POST",
     headers: { "Authorization": `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "gpt-4.1-mini",
+      model: "gpt-5-mini",
       messages: [
         { role: "system", content: system },
         { role: "user", content: user }
       ],
-      temperature: 0.0,
+      // gpt-5-mini는 temperature를 지원하지 않음 (기본값만 사용)
       max_completion_tokens: 600
     })
   });
@@ -1093,7 +1093,540 @@ function deriveMarketBehaviorFromCandles(candles) {
   };
 }
 
-function buildRagBundle({ symbolRaw, financials, news, ohlcv, peers, macroIndices, macroNews, screener }) {
+// SEC EDGAR API 헬퍼 함수들
+const SEC_USER_AGENT = process.env.SEC_USER_AGENT || "FinanceAgent/1.0 (contact@example.com)";
+
+async function fetchSecCikByTicker(ticker) {
+  try {
+    // SEC Company Tickers JSON 파일 사용 (전체 목록)
+    const url = "https://www.sec.gov/files/company_tickers.json";
+    const resp = await httpsGetText(url, {
+      "User-Agent": SEC_USER_AGENT,
+      "Accept": "application/json"
+    });
+    if (resp.status !== 200) return null;
+    const data = tryParseJson(resp.body);
+    if (data && typeof data === "object") {
+      // data는 객체이고, 각 값이 {cik_str, ticker, title} 형태
+      for (const key in data) {
+        const company = data[key];
+        if (company?.ticker && String(company.ticker).toUpperCase() === String(ticker).toUpperCase()) {
+          return String(company.cik_str || company.cik || "").padStart(10, "0");
+        }
+      }
+    }
+    return null;
+  } catch (e) {
+    console.error("SEC CIK 조회 실패:", e?.message || e);
+    return null;
+  }
+}
+
+async function fetchSecFilingsByCik(cik, count = 10) {
+  if (!cik) return null;
+  try {
+    const url = `https://data.sec.gov/submissions/CIK${cik}.json`;
+    const resp = await httpsGetText(url, {
+      "User-Agent": SEC_USER_AGENT,
+      "Accept": "application/json"
+    });
+    if (resp.status !== 200) return null;
+    const data = tryParseJson(resp.body);
+    if (!data?.filings?.recent) return null;
+    
+    const recent = data.filings.recent;
+    const filings = [];
+    for (let i = 0; i < Math.min(count, recent.accessionNumber?.length || 0); i++) {
+      const form = recent.form?.[i];
+      const filingDate = recent.filingDate?.[i];
+      const reportDate = recent.reportDate?.[i];
+      const accessionNumber = recent.accessionNumber?.[i];
+      
+      // 중요한 공시만 필터링 (10-K, 10-Q, 8-K, DEF 14A 등)
+      if (form && ["10-K", "10-Q", "8-K", "DEF 14A", "S-1", "S-3", "424B"].includes(form)) {
+        filings.push({
+          form,
+          filingDate,
+          reportDate,
+          accessionNumber,
+          accessionNumberNoDashes: accessionNumber?.replace(/-/g, "") || null,
+          description: recent.description?.[i] || null
+        });
+      }
+    }
+    return filings.length > 0 ? { cik, companyName: data.name, tickers: data.tickers || [], filings } : null;
+  } catch (e) {
+    console.error("SEC 공시 조회 실패:", e?.message || e);
+    return null;
+  }
+}
+
+async function fetchSecFilings(symbolRaw) {
+  try {
+    // 티커로 CIK 찾기
+    const cik = await fetchSecCikByTicker(symbolRaw);
+    if (!cik) {
+      console.log(`SEC CIK를 찾을 수 없음: ${symbolRaw}`);
+      return null;
+    }
+    
+    // 최근 공시 조회 (최대 10개)
+    const filingsData = await fetchSecFilingsByCik(cik, 10);
+    if (!filingsData || !filingsData.filings || filingsData.filings.length === 0) {
+      return null;
+    }
+    
+    return filingsData;
+  } catch (e) {
+    console.error("SEC 공시 데이터 수집 실패:", e?.message || e);
+    return null;
+  }
+}
+
+async function analyzeConsensusCard({ symbolRaw, consensus, currentPrice }) {
+  if (!OPENAI_API_KEY) return null;
+  if (!consensus || !consensus.ok) return null;
+  
+  const system = [
+    "너는 전문가 시장 기대치(컨센서스)를 분석하는 에이전트다.",
+    "이 시스템은 전문가용 트레이딩 도구가 아니라, 일반 투자자가 이해할 수 있도록 번역하는 도구다.",
+    "",
+    "중요한 철학:",
+    "- 컨센서스는 결정 자체가 아니다.",
+    "- 컨센서스는 최종 판단을 절대 대체하지 않는다.",
+    "- 컨센서스는 확신도와 맥락만 조정한다.",
+    "- 컨센서스만으로 직접적인 매수/매도 지시를 하지 않는다.",
+    "",
+    "출력은 반드시 유효한 JSON만 출력 (설명, 마크다운, 코드블록 없이):",
+    "{",
+    "  \"card_type\": \"consensus\",",
+    "  \"consensus_direction\": \"POSITIVE | NEUTRAL | MIXED | NEGATIVE\",",
+    "  \"expectation_pricing_state\": \"NOT_PRICED_IN | PARTIALLY_PRICED | MOSTLY_PRICED | OVEREXTENDED\",",
+    "  \"analyst_agreement_level\": \"HIGH | MEDIUM | LOW\",",
+    "  \"key_insight\": \"string (일반 투자자 관점의 자연어, 필요시에만 숫자 사용)\",",
+    "  \"what_it_means_for_judge\": \"string (이것이 확신도에 어떻게 영향을 주는지, verdict가 아닌 confidence)\",",
+    "  \"cautions\": [\"string (예: 컨센서스 지연, 집단 편향, 오래된 기대치)\"],",
+    "  \"raw_reference\": {",
+    "    \"recommendation_summary\": \"string\",",
+    "    \"target_price_range\": { \"low\": number, \"average\": number, \"high\": number },",
+    "    \"analyst_count\": number,",
+    "    \"data_source\": \"Yahoo Finance\"",
+    "  }",
+    "}",
+    "",
+    "규칙:",
+    "- consensus_direction: 매수 우세/상승 기대 → POSITIVE, 혼재/대부분 보유 → NEUTRAL, 매도 우세/하락 기대 → NEGATIVE, 명확하지 않음 → MIXED",
+    "- expectation_pricing_state: 현재가가 평균 목표가보다 낮으면 NOT_PRICED_IN, 평균 근처면 MOSTLY_PRICED, 높은 목표가보다 높으면 OVEREXTENDED",
+    "- analyst_agreement_level: 분석가 의견이 일치하면 HIGH, 혼재면 MEDIUM, 데이터 부족/불일치면 LOW",
+    "- key_insight: 일반 투자자가 이해할 수 있는 자연어, 금융 용어 최소화",
+    "- what_it_means_for_judge: 확신도에 영향을 주는 방식 설명 (verdict 결정이 아님)",
+    "- cautions: 컨센서스 지연, 집단 편향, 오래된 기대치 등 주의사항",
+    "- 모든 필드는 반드시 포함되어야 함",
+    "- 명령형 언어 금지 (\"매수하라\", \"매도하라\", \"해야 한다\")",
+    "- \"시장은 기대하는 것 같다\", \"현재 기대치는...\", \"이것은 확신이...\" 같은 표현 사용",
+    "- 컨센서스는 ACTION이 아닌 CONFIDENCE에 영향을 준다"
+  ].join("\n");
+  
+  // 컨센서스 데이터 정리
+  const rec = consensus.recommendation || {};
+  const target = consensus.targetPrice || {};
+  const earnings = consensus.earningsEstimate || {};
+  const price = consensus.price || {};
+  
+  const recTotal = (rec.strongBuy || 0) + (rec.buy || 0) + (rec.hold || 0) + (rec.sell || 0) + (rec.strongSell || 0);
+  const recBuy = (rec.strongBuy || 0) + (rec.buy || 0);
+  const recSell = (rec.strongSell || 0) + (rec.sell || 0);
+  
+  const user = [
+    `종목: ${symbolRaw}`,
+    `현재가: ${currentPrice || price?.regularMarketPrice || "N/A"}`,
+    "",
+    "추천 트렌드:",
+    `- Strong Buy: ${rec.strongBuy || 0}`,
+    `- Buy: ${rec.buy || 0}`,
+    `- Hold: ${rec.hold || 0}`,
+    `- Sell: ${rec.sell || 0}`,
+    `- Strong Sell: ${rec.strongSell || 0}`,
+    `- 총 분석가 수: ${recTotal}`,
+    `- 추천 평균: ${target.recommendationMean || "N/A"}`,
+    "",
+    "목표가:",
+    `- 낮은 목표가: ${target.low || "N/A"}`,
+    `- 평균 목표가: ${target.avg || "N/A"}`,
+    `- 높은 목표가: ${target.high || "N/A"}`,
+    `- 분석가 수: ${target.analystCount || 0}`,
+    "",
+    "실적 추정:",
+    earnings.period ? `- 기간: ${earnings.period}` : "",
+    earnings.low ? `- 낮은 추정: ${earnings.low}` : "",
+    earnings.avg ? `- 평균 추정: ${earnings.avg}` : "",
+    earnings.high ? `- 높은 추정: ${earnings.high}` : "",
+    earnings.yearAgoEps ? `- 전년 동기: ${earnings.yearAgoEps}` : "",
+    "",
+    "위 데이터를 분석하여 JSON 형태로 컨센서스 카드를 생성하세요.",
+    "현재가와 목표가를 비교하여 expectation_pricing_state를 결정하세요.",
+    "분석가 의견의 일치도를 평가하여 analyst_agreement_level을 결정하세요."
+  ].filter(Boolean).join("\n");
+  
+  try {
+    const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user }
+        ],
+        temperature: 0.35,
+        max_completion_tokens: 1200,
+        response_format: { type: "json_object" }
+      })
+    });
+    if (!resp.ok) throw new Error(`OpenAI request failed: ${resp.status}`);
+    const data = await resp.json();
+    const text = extractAssistantTextFromChatCompletions(data);
+    
+    // JSON 파싱 시도
+    const json = extractJsonObject(text);
+    if (json && json.card_type === "consensus" && json.consensus_direction && json.expectation_pricing_state && json.analyst_agreement_level) {
+      return {
+        card_type: "consensus",
+        consensus_direction: json.consensus_direction,
+        expectation_pricing_state: json.expectation_pricing_state,
+        analyst_agreement_level: json.analyst_agreement_level,
+        key_insight: json.key_insight || "",
+        what_it_means_for_judge: json.what_it_means_for_judge || "",
+        cautions: Array.isArray(json.cautions) ? json.cautions : [],
+        raw_reference: json.raw_reference || {
+          recommendation_summary: `Buy: ${recBuy}, Hold: ${rec.hold || 0}, Sell: ${recSell}`,
+          target_price_range: {
+            low: target.low || null,
+            average: target.avg || null,
+            high: target.high || null
+          },
+          analyst_count: target.analystCount || recTotal || 0,
+          data_source: "Yahoo Finance"
+        }
+      };
+    }
+    
+    // JSON 파싱 실패 시 기본값 반환
+    console.warn("컨센서스 분석 JSON 파싱 실패, 기본값 사용:", text?.slice(0, 200));
+    return {
+      card_type: "consensus",
+      consensus_direction: "NEUTRAL",
+      expectation_pricing_state: "MOSTLY_PRICED",
+      analyst_agreement_level: "LOW",
+      key_insight: "컨센서스 데이터 분석 중...",
+      what_it_means_for_judge: "컨센서스 데이터가 제한적이므로 확신도 조정에 주의가 필요합니다.",
+      cautions: ["데이터 부족으로 인한 제한적 분석"],
+      raw_reference: {
+        recommendation_summary: `Buy: ${recBuy}, Hold: ${rec.hold || 0}, Sell: ${recSell}`,
+        target_price_range: {
+          low: target.low || null,
+          average: target.avg || null,
+          high: target.high || null
+        },
+        analyst_count: target.analystCount || recTotal || 0,
+        data_source: "Yahoo Finance"
+      }
+    };
+  } catch (e) {
+    console.error("컨센서스 분석 실패:", e?.message || e);
+    return null;
+  }
+}
+
+async function analyzeChartCard({ symbolRaw, ohlcv, currentPrice }) {
+  if (!OPENAI_API_KEY) return null;
+  if (!ohlcv || !ohlcv.ok || !Array.isArray(ohlcv.data) || ohlcv.data.length === 0) return null;
+  
+  const system = [
+    "너는 차트 데이터를 독립적으로 분석하는 에이전트다.",
+    "일반 투자자가 이해하기 쉬운 말로 현재 가격 위치와 기술적 관점을 설명한다.",
+    "",
+    "출력은 반드시 유효한 JSON만 출력 (설명, 마크다운, 코드블록 없이):",
+    "{",
+    "  \"card_type\": \"chart\",",
+    "  \"key_insight\": \"string (일반 투자자 관점의 자연어, 현재 가격 위치와 기술적 관점)\",",
+    "  \"price_position\": \"string (현재 가격이 어디에 위치하는지: 상단/중간/하단, 상승 추세/하락 추세/횡보)\",",
+    "  \"technical_summary\": \"string (기술적 관점 요약, 2-3문장)\",",
+    "  \"what_it_means_for_judge\": \"string (이것이 종합 판단에 어떤 의미인지, Timing 관점)\"",
+    "}",
+    "",
+    "규칙:",
+    "- key_insight: 일반 투자자가 이해할 수 있는 자연어, 금융 용어 최소화",
+    "- price_position: 현재 가격의 상대적 위치와 추세",
+    "- technical_summary: 기술적 관점 요약",
+    "- what_it_means_for_judge: Timing 관점에서 종합 판단에 미치는 영향",
+    "- 모든 필드는 반드시 포함되어야 함",
+    "- 명령형 언어 금지"
+  ].join("\n");
+  
+  // 최근 데이터 추출 (최대 20개)
+  const recentData = ohlcv.data.slice(-20);
+  const prices = recentData.map(d => d.close || d.price || null).filter(v => v !== null);
+  const volumes = recentData.map(d => d.volume || null).filter(v => v !== null);
+  const high = Math.max(...prices);
+  const low = Math.min(...prices);
+  const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
+  
+  const user = [
+    `종목: ${symbolRaw}`,
+    `현재가: ${currentPrice || prices[prices.length - 1] || "N/A"}`,
+    "",
+    "최근 가격 데이터:",
+    `- 최고가: ${high}`,
+    `- 최저가: ${low}`,
+    `- 평균가: ${avg.toFixed(2)}`,
+    `- 데이터 포인트: ${prices.length}개`,
+    "",
+    "가격 추세:",
+    prices.length >= 2 ? `- 최근 가격 변화: ${prices[prices.length - 1]} → ${prices[0]} (${((prices[0] - prices[prices.length - 1]) / prices[prices.length - 1] * 100).toFixed(2)}%)` : "",
+    "",
+    "위 데이터를 분석하여 JSON 형태로 차트 카드를 생성하세요."
+  ].filter(Boolean).join("\n");
+  
+  try {
+    const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user }
+        ],
+        temperature: 0.35,
+        max_completion_tokens: 800,
+        response_format: { type: "json_object" }
+      })
+    });
+    if (!resp.ok) throw new Error(`OpenAI request failed: ${resp.status}`);
+    const data = await resp.json();
+    const text = extractAssistantTextFromChatCompletions(data);
+    
+    const json = extractJsonObject(text);
+    if (json && json.card_type === "chart" && json.key_insight && json.price_position) {
+      return {
+        card_type: "chart",
+        key_insight: json.key_insight || "",
+        price_position: json.price_position || "",
+        technical_summary: json.technical_summary || "",
+        what_it_means_for_judge: json.what_it_means_for_judge || ""
+      };
+    }
+    
+    console.warn("차트 분석 JSON 파싱 실패, 기본값 사용:", text?.slice(0, 200));
+    return {
+      card_type: "chart",
+      key_insight: "차트 데이터 분석 중...",
+      price_position: "분석 중",
+      technical_summary: "기술적 분석을 진행 중입니다.",
+      what_it_means_for_judge: "차트 데이터가 제한적이므로 Timing 관점에서 주의가 필요합니다."
+    };
+  } catch (e) {
+    console.error("차트 분석 실패:", e?.message || e);
+    return null;
+  }
+}
+
+async function analyzeCompanyCard({ symbolRaw, financials, companyName }) {
+  if (!OPENAI_API_KEY) return null;
+  if (!financials || !financials.ok) return null;
+  
+  const system = [
+    "너는 기업 데이터를 독립적으로 분석하는 에이전트다.",
+    "일반 투자자가 이해하기 쉬운 말로 기업의 체력과 재무 상태를 설명한다.",
+    "",
+    "출력은 반드시 유효한 JSON만 출력 (설명, 마크다운, 코드블록 없이):",
+    "{",
+    "  \"card_type\": \"company\",",
+    "  \"key_insight\": \"string (일반 투자자 관점의 자연어, 기업의 체력 요약)\",",
+    "  \"financial_strength\": \"string (재무 상태 요약: 강함/보통/약함, 이유)\",",
+    "  \"valuation_summary\": \"string (밸류에이션 관점 요약, 2-3문장)\",",
+    "  \"what_it_means_for_judge\": \"string (이것이 종합 판단에 어떤 의미인지, Quality 관점)\"",
+    "}",
+    "",
+    "규칙:",
+    "- key_insight: 일반 투자자가 이해할 수 있는 자연어, 금융 용어 최소화",
+    "- financial_strength: 재무 상태 요약",
+    "- valuation_summary: 밸류에이션 관점 요약",
+    "- what_it_means_for_judge: Quality 관점에서 종합 판단에 미치는 영향",
+    "- 모든 필드는 반드시 포함되어야 함",
+    "- 명령형 언어 금지"
+  ].join("\n");
+  
+  const price = financials.price || {};
+  const profile = financials.profile || {};
+  const keyStats = financials.keyStats || {};
+  
+  const user = [
+    `종목: ${symbolRaw}`,
+    `회사명: ${companyName || price?.longName || price?.shortName || symbolRaw}`,
+    "",
+    "기업 프로필:",
+    profile.sector ? `- 섹터: ${profile.sector}` : "",
+    profile.industry ? `- 산업: ${profile.industry}` : "",
+    profile.country ? `- 국가: ${profile.country}` : "",
+    "",
+    "주요 지표:",
+    keyStats.marketCap ? `- 시가총액: ${keyStats.marketCap}` : "",
+    keyStats.trailingPE ? `- PER: ${keyStats.trailingPE}` : "",
+    keyStats.forwardPE ? `- 선행 PER: ${keyStats.forwardPE}` : "",
+    keyStats.priceToBook ? `- PBR: ${keyStats.priceToBook}` : "",
+    keyStats.beta ? `- 베타: ${keyStats.beta}` : "",
+    "",
+    "위 데이터를 분석하여 JSON 형태로 기업분석 카드를 생성하세요."
+  ].filter(Boolean).join("\n");
+  
+  try {
+    const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user }
+        ],
+        temperature: 0.35,
+        max_completion_tokens: 800,
+        response_format: { type: "json_object" }
+      })
+    });
+    if (!resp.ok) throw new Error(`OpenAI request failed: ${resp.status}`);
+    const data = await resp.json();
+    const text = extractAssistantTextFromChatCompletions(data);
+    
+    const json = extractJsonObject(text);
+    if (json && json.card_type === "company" && json.key_insight && json.financial_strength) {
+      return {
+        card_type: "company",
+        key_insight: json.key_insight || "",
+        financial_strength: json.financial_strength || "",
+        valuation_summary: json.valuation_summary || "",
+        what_it_means_for_judge: json.what_it_means_for_judge || ""
+      };
+    }
+    
+    console.warn("기업분석 JSON 파싱 실패, 기본값 사용:", text?.slice(0, 200));
+    return {
+      card_type: "company",
+      key_insight: "기업 데이터 분석 중...",
+      financial_strength: "분석 중",
+      valuation_summary: "밸류에이션 분석을 진행 중입니다.",
+      what_it_means_for_judge: "기업 데이터가 제한적이므로 Quality 관점에서 주의가 필요합니다."
+    };
+  } catch (e) {
+    console.error("기업분석 실패:", e?.message || e);
+    return null;
+  }
+}
+
+async function analyzeSecFilingCard({ symbolRaw, filings, companyName }) {
+  if (!OPENAI_API_KEY) return null;
+  if (!filings || !Array.isArray(filings) || filings.length === 0) return null;
+  
+  const system = [
+    "너는 SEC 공시 문서를 종합 분석하는 에이전트다.",
+    "여러 공시를 하나로 묶어서 독립적인 분석 카드를 생성한다.",
+    "일반 투자자가 이해하기 쉬운 형태로 분석 결과를 제공한다.",
+    "",
+    "출력은 반드시 유효한 JSON만 출력 (설명, 마크다운, 코드블록 없이):",
+    "{",
+    "  \"sentiment\": \"positive\" | \"neutral\" | \"caution\",",
+    "  \"oneLineSummary\": \"일반 투자자 관점의 한 줄 요약 (숫자/회계 용어 최소화, 모든 공시를 종합한 요약)\",",
+    "  \"meaning\": \"투자자에게 의미 (왜 중요한지, 단기/중기 관점에서 어떤 영향을 줄 수 있는지, 2~3줄)\",",
+    "  \"risk\": \"주의할 점 (과도한 해석 경계, 리스크 또는 불확실성 요인)\",",
+    "  \"finalJudgement\": \"AI 종합 판단 (이 공시들이 현재 투자 판단에 긍정/중립/부정 중 어디에 가까운지, 단정적 표현 금지)\"",
+    "}",
+    "",
+    "규칙:",
+    "- sentiment는 모든 공시의 전반적인 톤을 종합하여 반영 (긍정적/중립적/주의 필요)",
+    "- oneLineSummary는 모든 공시를 종합한 일반 투자자가 바로 이해할 수 있는 자연어 문장",
+    "- meaning은 구체적이고 실용적인 설명 (여러 공시의 공통점/차이점 고려)",
+    "- risk는 과도한 낙관/비관을 경계하는 내용",
+    "- finalJudgement는 단정적 표현 없이 조건부/가능성 언어 사용",
+    "- 모든 필드는 반드시 포함되어야 함"
+  ].join("\n");
+  
+  // 공시 목록을 요약하여 제공
+  const filingsSummary = filings.map((f, idx) => 
+    `${idx + 1}. ${f.form} (제출일: ${f.filingDate || "N/A"}, 보고일: ${f.reportDate || "N/A"})${f.description ? ` - ${f.description}` : ""}`
+  ).join("\n");
+  
+  const user = [
+    `종목: ${symbolRaw}`,
+    `회사명: ${companyName || symbolRaw}`,
+    `공시 개수: ${filings.length}개`,
+    "",
+    "공시 목록:",
+    filingsSummary,
+    "",
+    "위 모든 공시를 종합하여 하나의 분석 카드를 JSON 형태로 생성하세요."
+  ].join("\n");
+  
+  try {
+    const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user }
+        ],
+        temperature: 0.35,
+        max_completion_tokens: 1200,
+        response_format: { type: "json_object" }
+      })
+    });
+    if (!resp.ok) throw new Error(`OpenAI request failed: ${resp.status}`);
+    const data = await resp.json();
+    const text = extractAssistantTextFromChatCompletions(data);
+    
+    // JSON 파싱 시도
+    const json = extractJsonObject(text);
+    if (json && json.sentiment && json.oneLineSummary && json.meaning && json.risk && json.finalJudgement) {
+      return {
+        filings: filings.map(f => ({
+          form: f.form,
+          filingDate: f.filingDate,
+          reportDate: f.reportDate,
+          accessionNumber: f.accessionNumber,
+          description: f.description
+        })),
+        analysis: json
+      };
+    }
+    
+    // JSON 파싱 실패 시 기본값 반환
+    console.warn("SEC 공시 분석 JSON 파싱 실패, 기본값 사용:", text?.slice(0, 200));
+    return {
+      filings: filings.map(f => ({
+        form: f.form,
+        filingDate: f.filingDate,
+        reportDate: f.reportDate,
+        accessionNumber: f.accessionNumber,
+        description: f.description
+      })),
+      analysis: {
+        sentiment: "neutral",
+        oneLineSummary: "공시 데이터 분석 중...",
+        meaning: "공시 내용을 분석하여 투자자에게 의미를 제공합니다.",
+        risk: "공시 해석 시 과도한 낙관 또는 비관을 경계해야 합니다.",
+        finalJudgement: "공시 내용을 종합적으로 고려하여 판단이 필요합니다."
+      }
+    };
+  } catch (e) {
+    console.error("SEC 공시 분석 실패:", e?.message || e);
+    return null;
+  }
+}
+
+function buildRagBundle({ symbolRaw, financials, news, ohlcv, peers, macroIndices, macroNews, screener, secFilings }) {
   const docs = [];
   const nowIso = new Date().toISOString();
 
@@ -1237,6 +1770,23 @@ function buildRagBundle({ symbolRaw, financials, news, ohlcv, peers, macroIndice
     } catch {
       // JSON 파싱 실패 시 무시
     }
+  }
+
+  // SEC 공시 데이터 doc
+  if (secFilings && secFilings.filings && Array.isArray(secFilings.filings) && secFilings.filings.length > 0) {
+    docs.push({
+      doc_id: `${symbolRaw}/sec_filings/recent`,
+      symbol: symbolRaw,
+      type: "sec_filings",
+      period: "recent",
+      source: "sec_edgar",
+      asOf: nowIso,
+      payload: {
+        companyName: secFilings.companyName,
+        tickers: secFilings.tickers || [],
+        filings: secFilings.filings.slice(0, 10) // 최대 10개
+      }
+    });
   }
 
   return {
@@ -1631,41 +2181,60 @@ async function gptPeerAdjustment({ symbolRaw, signals, story }) {
   );
 }
 
-async function gptFinalJudgement({ symbolRaw, signals, story, marketCheck, peerAdjust, rag, feedback }) {
+async function gptFinalJudgement({ symbolRaw, signals, story, marketCheck, peerAdjust, rag, feedback, secFilingCard = null, consensusCard = null, chartCard = null, companyCard = null }) {
   // 매크로와 스크리너 신호 존재 여부 확인
   const hasMacroSignal = signals?.macro_signal && signals.macro_signal.trim().length > 0;
   const hasScreenerSignal = signals?.screener_signal && signals.screener_signal.trim().length > 0;
   
   const system = [
-    "너는 '조건부 종합 판단(Final Judgement)' 에이전트다.",
-    "인간이 기업을 판단하는 사고 순서를 따른다: 재무→이벤트→시장(동의/불일치)→비교군 보정→매크로 환경→스크리너 트렌드→조건부 종합.",
+    "너는 'AI 종합 판단' 에이전트다. 일반 투자자가 이해하기 쉬운 말로 판단을 번역한다.",
+    "",
+    "판단 순서 (Decision Stack - 반드시 이 순서를 따름):",
+    "1. 시장 컨디션 (Macro): 전체 시장 환경, 지수 동향, 매크로 경제 지표",
+    "2. 기업의 체력 (Quality): 재무제표, 기업 프로필, 밸류에이션 지표",
+    "3. 현재 가격 위치 (Timing): 차트, 시장 행동, 가격 움직임, 기술적 위치",
+    "4. 뉴스/이벤트 (Catalyst & Risk): 뉴스, 이벤트, 실적 발표, 촉매 요인",
+    "5. 대안 비교 (Relative Choice): 관련주, 산업 비교, 스크리너 트렌드",
+    "→ 최종 판단",
     "",
     "신호 종류:",
-    "- financial_signal: 재무제표, 기업 프로필, 밸류에이션 지표",
-    "- event_signal: 뉴스, 이벤트, 실적 발표",
-    "- market_signal: 차트, 시장 행동, 가격 움직임",
-    "- peer_signal: 관련주, 산업 비교",
-    hasMacroSignal ? "- macro_signal: 매크로 경제 지표(지수, 통화, 원자재, 채권), 시장 전반 뉴스 (반드시 종합 판단에 포함)" : "",
-    hasScreenerSignal ? "- screener_signal: 스크리너 데이터에서 발견된 시장 트렌드, 섹터/종목군 특징 (반드시 종합 판단에 포함)" : "",
+    "- financial_signal: 기업의 체력 (Quality)",
+    "- event_signal: 뉴스/이벤트 (Catalyst & Risk)",
+    "- market_signal: 현재 가격 위치 (Timing)",
+    "- peer_signal: 대안 비교 (Relative Choice)",
+    hasMacroSignal ? "- macro_signal: 시장 컨디션 (Macro) - 반드시 종합 판단에 포함" : "",
+    hasScreenerSignal ? "- screener_signal: 스크리너 트렌드, 섹터/종목군 특징 - 대안 비교에 포함" : "",
     "",
-    "금지:",
-    "- 매수/매도/추천/목표가/수익률 예측",
-    "- 단정(확정적 표현) 남발",
+    "출력은 반드시 유효한 JSON만 출력 (설명, 마크다운, 코드블록 없이):",
+    "{",
+    "  \"final_judgment\": {",
+    "    \"verdict\": \"WAIT | BUY | ACCUMULATE | REDUCE | AVOID\",",
+    "    \"confidence\": \"LOW | MEDIUM | HIGH\"",
+    "  },",
+    "  \"one_line_summary\": \"string (한 줄 요약, 숫자 최소화, 비교/맥락 중심)\",",
+    "  \"decision_stack_reasoning\": {",
+    "    \"macro\": \"string (시장 컨디션, 2문장 이내)\",",
+    "    \"quality\": \"string (기업 체력, 2문장 이내)\",",
+    "    \"timing\": \"string (가격 위치, 2문장 이내)\",",
+    "    \"catalyst_risk\": \"string (뉴스/이벤트, 2문장 이내)\",",
+    "    \"relative_choice\": \"string (대안 비교, 2문장 이내)\"",
+    "  },",
+    "  \"action_guidance\": {",
+    "    \"recommended_action\": \"string (관망/분할 접근/주의 필요/매수 고려/매도 고려 등)\",",
+    "    \"conditions\": [\"string (조건 1)\", \"string (조건 2)\"]",
+    "  },",
+    "  \"downside_scenarios\": [\"string (리스크 시나리오 1)\", \"string (리스크 시나리오 2)\"],",
+    "  \"markdown_summary\": \"string (사용자 표시용 마크다운 형식의 요약)\"",
+    "}",
     "",
-    "출력 구조(한국어, 마크다운):",
-    "1. 기업 현재 상황 요약",
-    "2. 신호 간 일관성 / 충돌 지점",
-    hasMacroSignal ? "3. 매크로 환경이 기업에 미치는 영향" : "",
-    hasScreenerSignal ? "4. 스크리너 트렌드와의 연관성" : "",
-    hasMacroSignal || hasScreenerSignal ? "5. 긍정적으로 해석될 수 있는 요소" : "3. 긍정적으로 해석될 수 있는 요소",
-    hasMacroSignal || hasScreenerSignal ? "6. 주의가 필요한 요소" : "4. 주의가 필요한 요소",
-    hasMacroSignal || hasScreenerSignal ? "7. 조건부 종합 판단(어떤 조건이 충족/변하면 해석이 바뀌는지)" : "5. 조건부 종합 판단(어떤 조건이 충족/변하면 해석이 바뀌는지)",
-    "",
-    "반드시 마지막에 고지 문구를 그대로 포함:",
-    "“본 서비스는 정보 제공 및 이해 보조 목적의 AI 시스템이며,",
-    "투자 권유 또는 재무 자문을 제공하지 않습니다.",
-    "AI의 판단은 오류를 포함할 수 있습니다.”"
-  ].join("\n");
+    "규칙:",
+    "- verdict는 반드시 WAIT, BUY, ACCUMULATE, REDUCE, AVOID 중 하나",
+    "- confidence는 반드시 LOW, MEDIUM, HIGH 중 하나",
+    "- decision_stack_reasoning의 각 필드는 Decision Stack 순서대로 작성",
+    "- action_guidance는 명확한 판단과 선택지를 제시",
+    "- downside_scenarios는 가능한 리스크 및 실패 시나리오 제시",
+    "- markdown_summary는 사용자에게 표시할 마크다운 형식의 요약 (한국어)"
+  ].filter(Boolean).join("\n");
 
   const user = [
     `대상: ${symbolRaw}`,
@@ -1679,8 +2248,12 @@ async function gptFinalJudgement({ symbolRaw, signals, story, marketCheck, peerA
     "\n[비교군 보정]\n",
     JSON.stringify(peerAdjust, null, 2),
     "\n[RAG(참고)]\n",
-    safeJsonForPrompt({ doc_ids: (rag?.docs || []).map((d) => d.doc_id), asOf: rag?.asOf }, 8000)
-  ].join("\n");
+    safeJsonForPrompt({ doc_ids: (rag?.docs || []).map((d) => d.doc_id), asOf: rag?.asOf }, 8000),
+    chartCard ? `\n[차트 분석 카드]\n${JSON.stringify(chartCard, null, 2)}` : "",
+    companyCard ? `\n[기업분석 카드]\n${JSON.stringify(companyCard, null, 2)}` : "",
+    consensusCard ? `\n[컨센서스 분석 카드]\n${JSON.stringify(consensusCard, null, 2)}` : "",
+    secFilingCard ? `\n[SEC 공시 분석 카드]\n${JSON.stringify({ sentiment: secFilingCard.analysis?.sentiment, oneLineSummary: secFilingCard.analysis?.oneLineSummary, meaning: secFilingCard.analysis?.meaning }, null, 2)}` : ""
+  ].filter(Boolean).join("\n");
 
   const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
     method: "POST",
@@ -1692,20 +2265,69 @@ async function gptFinalJudgement({ symbolRaw, signals, story, marketCheck, peerA
         { role: "user", content: user }
       ],
       temperature: 0.35,
-      max_completion_tokens: 1100
+      max_completion_tokens: 2000,
+      response_format: { type: "json_object" }
     })
   });
   if (!resp.ok) throw new Error(`GPT final judgement failed: ${resp.status}`);
   const data = await resp.json();
-  return extractAssistantTextFromChatCompletions(data);
+  const text = extractAssistantTextFromChatCompletions(data);
+  const json = extractJsonObject(text);
+  
+  if (json && json.final_judgment && json.one_line_summary) {
+    // JSON 스키마 준수 확인 및 보정
+    const verdict = String(json.final_judgment?.verdict || "WAIT").toUpperCase();
+    const validVerdicts = ["WAIT", "BUY", "ACCUMULATE", "REDUCE", "AVOID"];
+    const finalVerdict = validVerdicts.includes(verdict) ? verdict : "WAIT";
+    
+    const confidence = String(json.final_judgment?.confidence || "MEDIUM").toUpperCase();
+    const validConfidences = ["LOW", "MEDIUM", "HIGH"];
+    const finalConfidence = validConfidences.includes(confidence) ? confidence : "MEDIUM";
+    
+    return {
+      json: {
+        final_judgment: {
+          verdict: finalVerdict,
+          confidence: finalConfidence
+        },
+        one_line_summary: String(json.one_line_summary || ""),
+        decision_stack_reasoning: {
+          macro: String(json.decision_stack_reasoning?.macro || ""),
+          quality: String(json.decision_stack_reasoning?.quality || ""),
+          timing: String(json.decision_stack_reasoning?.timing || ""),
+          catalyst_risk: String(json.decision_stack_reasoning?.catalyst_risk || ""),
+          relative_choice: String(json.decision_stack_reasoning?.relative_choice || "")
+        },
+        action_guidance: {
+          recommended_action: String(json.action_guidance?.recommended_action || ""),
+          conditions: Array.isArray(json.action_guidance?.conditions) ? json.action_guidance.conditions.map(String) : []
+        },
+        downside_scenarios: Array.isArray(json.downside_scenarios) ? json.downside_scenarios.map(String) : [],
+        markdown_summary: String(json.markdown_summary || "")
+      },
+      markdown: json.markdown_summary || text
+    };
+  }
+  
+  // JSON 파싱 실패 시 마크다운만 반환
+  console.warn("Judge JSON 파싱 실패, 마크다운만 반환:", text?.slice(0, 200));
+  return {
+    json: null,
+    markdown: text
+  };
 }
 
 async function gptPolicyVerifierJudgement({ draft }) {
   const system = [
-    "너는 정책 검증기다. 아래 텍스트가 투자 조언/확신 과잉/규정 위반인지 검사한다.",
+    "너는 정책 검증기다. 아래 텍스트가 출력 형식/확신 과잉/논리적 모순인지 검사한다.",
     "검사 항목:",
-    "- 매수/매도/추천/목표가/수익 예측/확정적 문장",
-    "- 오해 소지가 큰 법적/의학적/확정적 조언",
+    "- 출력 형식 준수 여부 (AI 종합 판단 → 한 줄 요약 → 판단 근거 → 선택지)",
+    "- Decision Stack 순서 준수 여부 (시장 컨디션 → 기업 체력 → 가격 위치 → 뉴스/이벤트 → 대안 비교)",
+    "- 확신 과잉 표현 (과도하게 확정적인 표현)",
+    "- 논리적 모순",
+    "",
+    "허용:",
+    "- 매수/매도 추천 및 투자 조언 (명확한 근거와 함께)",
     "",
     "출력은 JSON만:",
     "{",
@@ -1719,12 +2341,12 @@ async function gptPolicyVerifierJudgement({ draft }) {
     method: "POST",
     headers: { "Authorization": `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "gpt-4.1-mini",
+      model: "gpt-5-mini",
       messages: [
         { role: "system", content: system },
         { role: "user", content: user }
       ],
-      temperature: 0.0,
+      // gpt-5-mini는 temperature를 지원하지 않음 (기본값만 사용)
       max_completion_tokens: 450
     })
   });
@@ -1812,6 +2434,76 @@ async function handleJudgeStream(req, res) {
     const macroNews = Array.isArray(payload.macroNews) ? payload.macroNews.slice(0, 20) : [];
     const screener = clampStr(payload.screener || "", 200_000);
 
+    // SEC 공시 데이터 수집 (비동기, 실패해도 계속 진행)
+    let secFilings = null;
+    const secFilingsPromise = fetchSecFilings(symbolRaw).catch((e) => {
+      console.error("SEC 공시 데이터 수집 실패:", e?.message || e);
+      return null;
+    });
+
+    // 컨센서스 데이터 수집 (비동기, 실패해도 계속 진행)
+    let consensus = null;
+    const consensusPromise = (async () => {
+      try {
+        const modules = "price,financialData,recommendationTrend,earningsTrend";
+        const result = await fetchYahooQuoteSummary(symbolRaw, modules);
+        const price = result?.price || {};
+        const financialData = result?.financialData || {};
+        const recommendationTrend = result?.recommendationTrend || {};
+        const earningsTrend = result?.earningsTrend || {};
+        
+        const recLatest = recommendationTrend?.trend?.[0] || null;
+        const rec = recLatest
+          ? {
+              period: recLatest.period ?? null,
+              strongBuy: pickRaw(recLatest.strongBuy) ?? null,
+              buy: pickRaw(recLatest.buy) ?? null,
+              hold: pickRaw(recLatest.hold) ?? null,
+              sell: pickRaw(recLatest.sell) ?? null,
+              strongSell: pickRaw(recLatest.strongSell) ?? null
+            }
+          : null;
+        
+        const target = {
+          low: pickRaw(financialData.targetLowPrice) ?? null,
+          avg: pickRaw(financialData.targetMeanPrice) ?? null,
+          high: pickRaw(financialData.targetHighPrice) ?? null,
+          analystCount: pickRaw(financialData.numberOfAnalystOpinions) ?? null,
+          recommendationKey: financialData.recommendationKey ?? null,
+          recommendationMean: pickRaw(financialData.recommendationMean) ?? null
+        };
+        
+        const et0 = earningsTrend?.trend?.[0] || null;
+        const earningsEstimate = et0?.earningsEstimate
+          ? {
+              period: et0.period ?? null,
+              low: pickRaw(et0.earningsEstimate.low) ?? null,
+              avg: pickRaw(et0.earningsEstimate.avg) ?? null,
+              high: pickRaw(et0.earningsEstimate.high) ?? null,
+              yearAgoEps: pickRaw(et0.earningsEstimate.yearAgoEps) ?? null
+            }
+          : null;
+        
+        return {
+          ok: true,
+          source: "yahoo",
+          symbol: symbolRaw,
+          asOf: new Date().toISOString(),
+          price: {
+            currency: price?.currency ?? null,
+            regularMarketPrice: pickRaw(price?.regularMarketPrice) ?? null,
+            shortName: price?.shortName ?? null
+          },
+          recommendation: rec,
+          targetPrice: target,
+          earningsEstimate
+        };
+      } catch (e) {
+        console.error("컨센서스 데이터 수집 실패:", e?.message || e);
+        return null;
+      }
+    })();
+
     const [financials, news, ohlcv, peers] = await Promise.all([
       (async () => {
         const f = await (async () => {
@@ -1887,7 +2579,11 @@ async function handleJudgeStream(req, res) {
       fetchPeersBundle(symbolRaw)
     ]);
 
-    const rag = buildRagBundle({ symbolRaw, financials, news, ohlcv, peers, macroIndices, macroNews, screener });
+    // SEC 공시 및 컨센서스 데이터 수집 완료 대기
+    secFilings = await secFilingsPromise;
+    consensus = await consensusPromise;
+    
+    const rag = buildRagBundle({ symbolRaw, financials, news, ohlcv, peers, macroIndices, macroNews, screener, secFilings });
     const input_hash = sha256Hex(JSON.stringify({ symbolRaw, question, rag_version: rag.rag_version, docs: rag.docs.map((d) => ({ id: d.doc_id, type: d.type, asOf: d.asOf })) }));
     sseEvent(res, { event: "rag", data: { run_id, input_hash, rag_meta: { symbol: rag.symbol, asOf: rag.asOf, doc_ids: rag.docs.map((d) => d.doc_id) } } });
     // 클라이언트/DB 저장용(재현 가능성 ↑). UI에는 노출하지 않도록 클라이언트에서 별도 처리.
@@ -1950,48 +2646,222 @@ async function handleJudgeStream(req, res) {
       sseEvent(res, { event: "signal", data: { signals, error: String(e?.message || e) } });
     }
 
-    // 2) 스토리 생성
+    // 2) 스토리 생성 (선택적 - 각 카드가 독립적으로 분석되므로 선택적으로 수행)
     sseEvent(res, { event: "status", data: { stage: "story_link" } });
-    let story = await gptStoryLinking({ symbolRaw, signals });
-    // story가 비어있거나 너무 짧으면 기본값 제공
+    let story = "";
+    try {
+      story = await gptStoryLinking({ symbolRaw, signals });
     if (!story || String(story).trim().length < 10) {
-      story = "신호 간 인과관계 분석 중... (스토리 생성 실패로 시장 검증은 제한적입니다)";
+        story = "";
+      }
+    } catch (e) {
+      console.warn("스토리 생성 실패 (선택적 단계):", e?.message || e);
+      story = "";
     }
-    sseEvent(res, { event: "story", data: { story } });
+    sseEvent(res, { event: "story", data: { story: story || "각 카드의 독립 분석 결과를 종합 판단에 직접 사용합니다." } });
 
-    // 3) 시장 검증
+    // 3) 시장 검증 (스토리 없이도 신호 기반으로 수행 가능)
     sseEvent(res, { event: "status", data: { stage: "market_check" } });
     let marketCheck;
-    // story가 유효한 경우에만 시장 검증 수행
-    if (story && String(story).trim().length >= 20 && !story.includes("스토리 생성 실패")) {
+    if (story && String(story).trim().length >= 20) {
+      // 스토리가 유효한 경우 스토리 기반 시장 검증
+      try {
       marketCheck = await gptMarketAgreement({ symbolRaw, signals, story });
+      } catch (e) {
+        console.warn("시장 검증 실패 (스토리 기반):", e?.message || e);
+        marketCheck = {
+          agreement: "부분 동의",
+          reason: "시장 신호와의 일치 여부를 확인했습니다."
+        };
+      }
     } else {
+      // 스토리가 없는 경우 신호 기반 간단한 시장 검증
       marketCheck = {
         agreement: "부분 동의",
-        reason: "스토리 생성이 불완전하여 시장 검증을 건너뜁니다. 시장 신호만으로는 검증이 제한적입니다."
+        reason: "각 카드의 독립 분석 결과를 종합하여 판단합니다."
       };
     }
-    sseEvent(res, { event: "market_check", data: { marketCheck, story } });
+    sseEvent(res, { event: "market_check", data: { marketCheck, story: story || "" } });
 
-    // 4) 비교군 보정
+    // 4-1) 컨센서스 카드 분석
+    let consensusCard = null;
+    if (consensus && consensus.ok) {
+      sseEvent(res, { event: "status", data: { stage: "consensus_analysis" } });
+      try {
+        const currentPrice = consensus.price?.regularMarketPrice || null;
+        consensusCard = await analyzeConsensusCard({
+          symbolRaw,
+          consensus,
+          currentPrice
+        });
+        
+        if (consensusCard) {
+          sseEvent(res, { 
+            event: "consensus_card", 
+            data: { 
+              card: consensusCard
+            } 
+          });
+        }
+      } catch (e) {
+        console.error("컨센서스 분석 카드 생성 실패:", e?.message || e);
+        sseEvent(res, { event: "consensus_card", data: { card: null, error: String(e?.message || e) } });
+      }
+    }
+
+    // 4-2) SEC 공시 분석 카드 생성 (독립적으로, 하나의 카드로 통합)
+    let secFilingCard = null;
+    if (secFilings && secFilings.filings && secFilings.filings.length > 0) {
+      sseEvent(res, { event: "status", data: { stage: "sec_filings_analysis" } });
+      try {
+        // 모든 공시를 하나의 카드로 통합 분석
+        secFilingCard = await analyzeSecFilingCard({
+          symbolRaw,
+          filings: secFilings.filings.slice(0, 10), // 최대 10개 공시
+          companyName: secFilings.companyName
+        });
+        
+        if (secFilingCard) {
+          sseEvent(res, { 
+            event: "sec_filing_card", 
+            data: { 
+              card: {
+                companyName: secFilings.companyName,
+                ticker: symbolRaw,
+                filings: secFilingCard.filings || [],
+                sentiment: secFilingCard.analysis?.sentiment || "neutral",
+                oneLineSummary: secFilingCard.analysis?.oneLineSummary || "",
+                meaning: secFilingCard.analysis?.meaning || "",
+                risk: secFilingCard.analysis?.risk || "",
+                finalJudgement: secFilingCard.analysis?.finalJudgement || ""
+              }
+            } 
+          });
+        } else {
+          // 공시 데이터는 있지만 분석 실패
+          sseEvent(res, { 
+            event: "sec_filing_card", 
+            data: { 
+              card: {
+                companyName: secFilings.companyName || symbolRaw,
+                ticker: symbolRaw,
+                filings: secFilings.filings.slice(0, 10).map(f => ({ form: f.form, filingDate: f.filingDate })),
+                sentiment: "neutral",
+                oneLineSummary: "공시 데이터 분석 중...",
+                meaning: "공시 데이터를 분석하고 있습니다.",
+                risk: "공시 해석 시 주의가 필요합니다.",
+                finalJudgement: "공시 내용을 종합적으로 고려하여 판단이 필요합니다."
+              }
+            } 
+          });
+        }
+      } catch (e) {
+        console.error("SEC 공시 분석 카드 생성 실패:", e?.message || e);
+        sseEvent(res, { event: "sec_filing_card", data: { card: null, error: String(e?.message || e) } });
+      }
+    } else {
+      // 공시 데이터가 없는 경우에도 카드 표시
+      sseEvent(res, { 
+        event: "sec_filing_card", 
+        data: { 
+          card: {
+            companyName: financials?.price?.longName || financials?.price?.shortName || symbolRaw,
+            ticker: symbolRaw,
+            filings: [],
+            sentiment: "neutral",
+            oneLineSummary: "최근 공시 데이터가 없습니다.",
+            meaning: "최근 공시 데이터가 없어 공시 분석을 수행할 수 없습니다.",
+            risk: "공시 데이터 부족으로 인한 제한적 분석입니다.",
+            finalJudgement: "공시 정보 없이 다른 신호를 중심으로 판단이 필요합니다."
+          }
+        } 
+      });
+    }
+
+    // 4-3) 차트 분석 카드 생성 (독립적으로)
+    let chartCard = null;
+    sseEvent(res, { event: "status", data: { stage: "chart_analysis" } });
+    if (ohlcv && ohlcv.ok && Array.isArray(ohlcv.data) && ohlcv.data.length > 0) {
+      try {
+        const currentPrice = financials?.price?.regularMarketPrice || ohlcv.data[ohlcv.data.length - 1]?.close || null;
+        chartCard = await analyzeChartCard({
+          symbolRaw,
+          ohlcv,
+          currentPrice
+        });
+        
+        if (chartCard) {
+          sseEvent(res, { 
+            event: "chart_card", 
+            data: { 
+              card: chartCard
+            } 
+          });
+        }
+      } catch (e) {
+        console.error("차트 분석 카드 생성 실패:", e?.message || e);
+        sseEvent(res, { event: "chart_card", data: { card: null, error: String(e?.message || e) } });
+      }
+    }
+
+    // 4-4) 기업분석 카드 생성 (독립적으로)
+    let companyCard = null;
+    sseEvent(res, { event: "status", data: { stage: "company_analysis" } });
+    if (financials && financials.ok) {
+      try {
+        const companyName = financials.price?.longName || financials.price?.shortName || symbolRaw;
+        companyCard = await analyzeCompanyCard({
+          symbolRaw,
+          financials,
+          companyName
+        });
+        
+        if (companyCard) {
+          sseEvent(res, { 
+            event: "company_card", 
+            data: { 
+              card: companyCard
+            } 
+          });
+        }
+      } catch (e) {
+        console.error("기업분석 카드 생성 실패:", e?.message || e);
+        sseEvent(res, { event: "company_card", data: { card: null, error: String(e?.message || e) } });
+      }
+    }
+
+    // 5) 비교군 보정 (스토리 없이도 신호 기반으로 수행 가능)
     sseEvent(res, { event: "status", data: { stage: "peer_adjust" } });
-    const peerAdjust = await gptPeerAdjustment({ symbolRaw, signals, story });
+    let peerAdjust;
+    try {
+      peerAdjust = await gptPeerAdjustment({ symbolRaw, signals, story: story || "" });
+    } catch (e) {
+      console.warn("비교군 보정 실패:", e?.message || e);
+      peerAdjust = {
+        adjustment: "",
+        industry_vs_company: ""
+      };
+    }
     sseEvent(res, { event: "peer_adjust", data: { peerAdjust } });
 
-    // 5) 조건부 종합 판단 + 검증/재시도
+    // 6) 조건부 종합 판단 + 검증/재시도 (모든 독립 분석 카드 결과 종합)
     const maxAttempts = 3;
-    let finalText = "";
+    let finalResult = null;
+    let finalMarkdown = "";
     let policy = null;
     let gem = null;
     let feedback = "";
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       sseEvent(res, { event: "status", data: { stage: "final_judgement", attempt } });
-      finalText = await gptFinalJudgement({ symbolRaw, signals, story, marketCheck, peerAdjust, rag, feedback });
+      const judgementResult = await gptFinalJudgement({ symbolRaw, signals, story, marketCheck, peerAdjust, rag, feedback, secFilingCard, consensusCard, chartCard, companyCard });
+      
+      finalResult = judgementResult?.json || null;
+      finalMarkdown = judgementResult?.markdown || String(judgementResult || "");
 
       sseEvent(res, { event: "status", data: { stage: "verify", attempt } });
-      policy = await gptPolicyVerifierJudgement({ draft: finalText });
-      gem = await geminiJudgementVerifier({ draft: finalText });
+      policy = await gptPolicyVerifierJudgement({ draft: finalMarkdown });
+      gem = await geminiJudgementVerifier({ draft: finalMarkdown });
 
       const policyFail = String(policy?.verdict || "FAIL").toUpperCase() !== "PASS";
       const gemFail = gem?.ok === false && ((gem?.numeric_or_period_issues || []).length || (gem?.logic_direction_issues || []).length);
@@ -2008,7 +2878,45 @@ async function handleJudgeStream(req, res) {
         .join("\n");
     }
 
-    sseEvent(res, { event: "final", data: { run_id, input_hash, answer: finalText, verifier: { policy, gemini: gem } } });
+    // 원문 수치 데이터 준비
+    const rawData = {
+      signals: signals,
+      marketCheck: marketCheck,
+      peerAdjust: peerAdjust,
+      chartCard: chartCard,
+      companyCard: companyCard,
+      consensusCard: consensusCard,
+      secFilingCard: secFilingCard,
+      rag: {
+        doc_ids: (rag?.docs || []).map((d) => d.doc_id),
+        asOf: rag?.asOf
+      }
+    };
+    
+    // raw_data_reference 추가 (기획서 JSON 스키마 준수)
+    if (finalResult) {
+      finalResult.raw_data_reference = {
+        signals_used: Object.keys(signals).filter(k => signals[k] && String(signals[k]).trim().length > 0),
+        data_timestamp: new Date().toISOString(),
+        data_sources: [
+          "Yahoo Finance",
+          secFilingCard ? "SEC EDGAR" : null,
+          consensusCard ? "Yahoo Finance Consensus" : null
+        ].filter(Boolean)
+      };
+    }
+    
+    sseEvent(res, { 
+      event: "final", 
+      data: { 
+        run_id, 
+        input_hash, 
+        answer: finalMarkdown,
+        json: finalResult,
+        rawData: rawData, 
+        verifier: { policy, gemini: gem } 
+      } 
+    });
     sseEvent(res, { event: "done", data: {} });
     res.end();
     } catch (e) {
@@ -2412,7 +3320,7 @@ async function tryPerplexityExplain({ system, input }) {
         { role: "user", content: input }
       ],
       temperature: 0.4,
-      max_tokens: 900
+      max_completion_tokens: 900
     })
   });
 
@@ -2522,29 +3430,63 @@ async function handleYahooIndices(req, res) {
 
   try {
     const rows = [];
+    const errors = [];
     for (const symbolRaw of symbols) {
-      const yahooUrl =
-        `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbolRaw)}` +
-        `?interval=1d&range=5d&includePrePost=false&events=div%7Csplit`;
-      const r = await httpsGetText(yahooUrl, { "User-Agent": "Mozilla/5.0", "Accept": "application/json" });
-      if (r.status < 200 || r.status >= 300) {
-        return sendJson(res, 502, { ok: false, error: "Yahoo indices request failed", status: r.status, details: (r.body || "").slice(0, 2000) });
+      try {
+        const yahooUrl =
+          `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbolRaw)}` +
+          `?interval=1d&range=5d&includePrePost=false&events=div%7Csplit`;
+        const r = await httpsGetText(yahooUrl, { "User-Agent": "Mozilla/5.0", "Accept": "application/json" });
+        if (r.status < 200 || r.status >= 300) {
+          console.warn(`[Yahoo Indices] 심볼 ${symbolRaw} 요청 실패: ${r.status}`);
+          errors.push({ symbol: symbolRaw, error: `HTTP ${r.status}` });
+          continue;
+        }
+        const data = JSON.parse(r.body || "{}");
+        
+        // 에러 응답 체크
+        if (data?.chart?.error) {
+          console.warn(`[Yahoo Indices] 심볼 ${symbolRaw} 에러:`, data.chart.error);
+          errors.push({ symbol: symbolRaw, error: data.chart.error.description || data.chart.error.code || "Not Found" });
+          continue;
+        }
+        
+        const result = data?.chart?.result?.[0];
+        if (!result) {
+          console.warn(`[Yahoo Indices] 심볼 ${symbolRaw} 결과 없음`);
+          errors.push({ symbol: symbolRaw, error: "No data found" });
+          continue;
+        }
+        
+        const meta = result.meta || {};
+        rows.push({
+          symbol: meta.symbol || symbolRaw,
+          shortName: meta.shortName || null,
+          longName: meta.longName || null,
+          currency: meta.currency || null,
+          regularMarketTime: meta.regularMarketTime || null,
+          regularMarketPrice: meta.regularMarketPrice ?? null,
+          previousClose: meta.previousClose ?? null,
+          regularMarketChange: meta.regularMarketChange ?? null,
+          regularMarketChangePercent: meta.regularMarketChangePercent ?? null
+        });
+      } catch (symbolError) {
+        console.warn(`[Yahoo Indices] 심볼 ${symbolRaw} 처리 중 예외:`, symbolError?.message || symbolError);
+        errors.push({ symbol: symbolRaw, error: String(symbolError?.message || symbolError) });
+        continue;
       }
-      const data = JSON.parse(r.body || "{}");
-      const meta = data?.chart?.result?.[0]?.meta || {};
-      rows.push({
-        symbol: meta.symbol || symbolRaw,
-        shortName: meta.shortName || null,
-        longName: meta.longName || null,
-        currency: meta.currency || null,
-        regularMarketTime: meta.regularMarketTime || null,
-        regularMarketPrice: meta.regularMarketPrice ?? null,
-        previousClose: meta.previousClose ?? null,
-        regularMarketChange: meta.regularMarketChange ?? null,
-        regularMarketChangePercent: meta.regularMarketChangePercent ?? null
-      });
     }
-    const out = { ok: true, source: "yahoo", asOf: new Date().toISOString(), rows };
+    // 일부 심볼이 실패해도 성공한 것들은 반환
+    const out = { 
+      ok: true, 
+      source: "yahoo", 
+      asOf: new Date().toISOString(), 
+      rows,
+      errors: errors.length > 0 ? errors : undefined
+    };
+    if (errors.length > 0) {
+      console.warn(`[Yahoo Indices] ${errors.length}개 심볼 실패:`, errors.map(e => e.symbol).join(", "));
+    }
     cache.set(cacheKey, { ts: now, data: out });
     return sendJson(res, 200, out);
   } catch (e) {
@@ -2760,12 +3702,12 @@ async function handleTickerEnrich(req, res) {
     method: "POST",
     headers: { "Authorization": `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "gpt-4.1-mini",
+      model: "gpt-5-mini",
       messages: [
         { role: "system", content: system },
         { role: "user", content: user }
       ],
-      temperature: 0.2,
+      // gpt-5-mini는 temperature를 지원하지 않음 (기본값만 사용)
       max_completion_tokens: 400
     })
   });
@@ -2856,12 +3798,12 @@ async function handleTickerEnrichBatch(req, res) {
       method: "POST",
       headers: { "Authorization": `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "gpt-4.1-mini",
+        model: "gpt-5-mini",
         messages: [
           { role: "system", content: system },
           { role: "user", content: user }
         ],
-        temperature: 0.2,
+        // gpt-5-mini는 temperature를 지원하지 않음 (기본값만 사용)
         max_completion_tokens: 1200
       })
     });
@@ -2881,21 +3823,57 @@ async function handleTickerEnrichBatch(req, res) {
         aliases_en: Array.isArray(x?.aliases_en) ? x.aliases_en.map((v) => String(v).trim()).filter(Boolean).slice(0, 12) : []
       }))
       .slice(0, items.length);
-    return sendJson(res, 200, { ok: true, provider: "openai", model: "gpt-4.1-mini", items: out });
+    return sendJson(res, 200, { ok: true, provider: "openai", model: "gpt-5-mini", items: out });
   } catch (e) {
     return sendJson(res, 502, { ok: false, error: "ticker_enrich_batch_error", provider: "openai", details: String(e?.message || e) });
+  }
+}
+
+async function handleSecFilings(req, res) {
+  if (req.method !== "GET") return sendJson(res, 405, { ok: false, error: "Method Not Allowed" });
+  
+  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  const symbolRaw = clampStr(url.searchParams.get("symbol") || "", 32).trim().toUpperCase();
+  if (!symbolRaw || !isSafeYahooSymbol(symbolRaw)) {
+    return sendJson(res, 400, { ok: false, error: "Invalid symbol" });
+  }
+  
+  try {
+    const filingsData = await fetchSecFilings(symbolRaw);
+    if (!filingsData) {
+      return sendJson(res, 200, { ok: true, symbol: symbolRaw, filings: [], message: "공시 데이터를 찾을 수 없습니다." });
+    }
+    
+    return sendJson(res, 200, {
+      ok: true,
+      symbol: symbolRaw,
+      companyName: filingsData.companyName,
+      tickers: filingsData.tickers,
+      filings: filingsData.filings,
+      asOf: new Date().toISOString()
+    });
+  } catch (e) {
+    console.error("SEC 공시 조회 실패:", e?.message || e);
+    return sendJson(res, 500, { ok: false, error: "SEC 공시 조회 실패", details: String(e?.message || e) });
   }
 }
 
 async function handleMarketInsight(req, res) {
   if (req.method !== "POST") return sendJson(res, 405, { ok: false, error: "Method Not Allowed" });
 
+  // 디버깅: 환경 변수 확인
+  console.log("[Market Insight] OPENAI_API_KEY 존재:", !!OPENAI_API_KEY);
+  console.log("[Market Insight] OPENAI_API_KEY 길이:", OPENAI_API_KEY ? OPENAI_API_KEY.length : 0);
+  console.log("[Market Insight] OPENAI_BASE_URL:", OPENAI_BASE_URL);
+  console.log("[Market Insight] OPENAI_MODEL:", OPENAI_MODEL);
+
   let payload;
   try {
     const raw = await readRequestBody(req);
     payload = raw ? JSON.parse(raw) : {};
-  } catch {
-    return sendJson(res, 400, { ok: false, error: "Invalid JSON" });
+  } catch (e) {
+    console.error("[Market Insight] Payload 파싱 실패:", e);
+    return sendJson(res, 400, { ok: false, error: "Invalid JSON", details: String(e?.message || e) });
   }
 
   // 5분 캐시(매크로 화면에서 5분마다 갱신 요구)
@@ -2904,6 +3882,7 @@ async function handleMarketInsight(req, res) {
   const force = payload?.force === true;
   const cached = globalThis.__insightCache;
   if (!force && cached.data && now - cached.ts < 300_000) {
+    console.log("[Market Insight] 캐시된 데이터 반환");
     return sendJson(res, 200, { ...cached.data, cached: true });
   }
 
@@ -2911,8 +3890,16 @@ async function handleMarketInsight(req, res) {
   const news = Array.isArray(payload.news) ? payload.news.slice(0, 20) : [];
   const locale = clampStr(payload.locale || "ko", 8);
 
+  console.log("[Market Insight] 입력 데이터:", {
+    indicesCount: indices.length,
+    newsCount: news.length,
+    locale,
+    force
+  });
+
   // 키가 없으면 mock
   if (!OPENAI_API_KEY) {
+    console.warn("[Market Insight] OPENAI_API_KEY가 설정되지 않음 - mock 모드");
     const out = {
       ok: true,
       mode: "mock",
@@ -2934,31 +3921,33 @@ async function handleMarketInsight(req, res) {
   }
 
   const system = [
-    "당신은 'Market Insight' 요약 작성자입니다.",
-    "입력으로 제공되는 시장 지표(지수/통화/원자재/채권/선물)와 뉴스 헤드라인을 종합해 오늘의 시장 '상황 요약 + 해설'을 씁니다.",
+    "당신은 'Market Insight' 시장 해설가입니다.",
+    "입력으로 제공되는 시장 지표(지수/통화/원자재/채권/선물)와 뉴스 헤드라인을 바탕으로, 단순 요약이 아닌 **의미 해석과 해설**을 중심으로 작성합니다.",
     "",
-    "절대 금지:",
-    "- 투자 판단/추천/매수/매도/포지션/진입/청산 등 주문 유도(‘해야 한다’ 톤 금지)",
-    "",
-    "허용:",
-    "- 수치/퍼센트/지표 값 언급(가능)",
-    "- '전망'은 '가능한 시나리오/조건부'로만 표현(단정 금지)",
-    "- \"현재 헤드라인에서 이런 쟁점이 부각\" 같은 관점 요약",
-    "- '혼조/위험선호/위험회피' 같은 정성적 톤",
-    "- 불확실성/상충 관점 명시",
-    "- 오늘 확인할 체크포인트 제시(질문 형태 권장)",
+    "핵심 원칙:",
+    "- 숫자나 사실을 나열하는 것이 아니라, '왜 그런지', '무엇을 의미하는지'를 설명합니다.",
+    "- 각 지표의 움직임이 시장에 어떤 신호를 주는지 해석합니다.",
+    "- 뉴스 이슈의 배경과 시장에 미칠 수 있는 영향을 분석합니다.",
+    "- 투자자 관점에서 '이것이 왜 중요한가'를 명확히 전달합니다.",
     "",
     "출력(항상 한국어, 마크다운):",
     "## 오늘의 Market Insight",
-    "### 상황 요약(지표/헤드라인 기반)",
-    "### 주요 이슈(3~6개)",
-    "### 해설(왜 중요할 수 있나)",
-    "### 오늘의 관찰 포인트(체크리스트)",
-    "### 단기 시나리오(조건부, 단정 금지)",
-    "### 체크포인트(오늘 확인할 것)",
-    "### 리스크/불확실성",
+    "### 시장 해석",
+    "지수와 주요 지표의 움직임을 분석하고, 이것이 시장에 어떤 의미인지 해설합니다. 단순 나열이 아닌 해석 중심으로 작성합니다.",
     "",
-    "문체: 간결, 과장 금지, 단정 금지."
+    "### 주요 이슈와 의미",
+    "뉴스 헤드라인과 시장 이벤트를 나열하는 것이 아니라, 각 이슈가 왜 중요한지, 시장에 어떤 영향을 줄 수 있는지 해설합니다.",
+    "",
+    "### 시장 신호 해석",
+    "지표들의 움직임이 함께 보여주는 시장의 방향성과 신호를 해석합니다. 예: '지수 상승 + 달러 강세 + 금리 하락'이 함께 나타날 때의 의미 등.",
+    "",
+    "### 관찰 포인트",
+    "오늘 확인해야 할 주요 포인트를 나열하되, 각 포인트가 왜 중요한지 간단히 설명합니다.",
+    "",
+    "### 리스크와 불확실성",
+    "현재 시장의 주요 리스크와 불확실성을 명시하고, 이것이 투자 결정에 어떤 영향을 줄 수 있는지 해설합니다.",
+    "",
+    "문체: 해설 위주로 작성. 숫자 나열보다는 의미 해석 중심. 투자 판단과 조언을 포함할 수 있습니다."
   ].join("\n");
 
   const compactIndices = indices.map((r) => ({
@@ -2985,11 +3974,19 @@ async function handleMarketInsight(req, res) {
     "news (internal):",
     JSON.stringify(compactNews, null, 2),
     "",
-    "주의: 투자 조언(매수/매도/추천)을 하지 마세요. 단정 대신 조건부로 설명하세요."
+    "지표나 뉴스 데이터가 없거나 부족한 경우, 일반적인 시장 관찰 포인트를 제시하세요."
   ].join("\n");
 
-  async function callOpenAI(messages, max_completion_tokens = 700) {
-    const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+  async function callOpenAI(messages, max_completion_tokens = 1200) {
+    console.log("[Market Insight] GPT API 호출 시작");
+    console.log("[Market Insight] 요청 URL:", `${OPENAI_BASE_URL}/chat/completions`);
+    console.log("[Market Insight] 모델:", OPENAI_MODEL);
+    console.log("[Market Insight] 메시지 수:", messages.length);
+    console.log("[Market Insight] max_completion_tokens:", max_completion_tokens);
+    
+    let resp;
+    try {
+      resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${OPENAI_API_KEY}`,
@@ -3002,15 +3999,59 @@ async function handleMarketInsight(req, res) {
         max_completion_tokens
       })
     });
+      
+      console.log("[Market Insight] GPT API 응답 상태:", resp.status, resp.statusText);
+      
     if (!resp.ok) {
       const errText = await resp.text().catch(() => "");
-      const e = new Error("OpenAI request failed");
+        console.error("[Market Insight] GPT API 호출 실패:", {
+          status: resp.status,
+          statusText: resp.statusText,
+          errorText: errText.slice(0, 1000),
+          headers: Object.fromEntries(resp.headers.entries())
+        });
+        const e = new Error(`OpenAI request failed: ${resp.status} ${resp.statusText}`);
       e.status = resp.status;
+        e.statusText = resp.statusText;
       e.details = errText.slice(0, 2000);
+        e.errorText = errText;
       throw e;
     }
-    const data = await resp.json();
-    return extractAssistantTextFromChatCompletions(data);
+      
+      let data;
+      try {
+        data = await resp.json();
+        console.log("[Market Insight] GPT API 응답 수신 성공");
+        console.log("[Market Insight] 응답 구조:", {
+          hasChoices: !!data.choices,
+          choicesLength: data.choices?.length || 0,
+          hasError: !!data.error
+        });
+      } catch (jsonError) {
+        console.error("[Market Insight] JSON 파싱 실패:", {
+          error: jsonError,
+          responseText: await resp.text().catch(() => "읽기 실패")
+        });
+        throw new Error(`JSON parse failed: ${jsonError?.message || jsonError}`);
+      }
+      
+      const extracted = extractAssistantTextFromChatCompletions(data);
+      console.log("[Market Insight] 추출된 텍스트 길이:", extracted?.length || 0);
+      console.log("[Market Insight] 추출된 텍스트 미리보기:", extracted?.slice(0, 200) || "(빈 응답)");
+      
+      return extracted;
+    } catch (fetchError) {
+      console.error("[Market Insight] fetch 호출 중 예외 발생:", {
+        name: fetchError?.name,
+        message: fetchError?.message,
+        stack: fetchError?.stack,
+        status: fetchError?.status,
+        statusText: fetchError?.statusText,
+        details: fetchError?.details,
+        errorText: fetchError?.errorText
+      });
+      throw fetchError;
+    }
   }
 
   function buildFallbackInsight({ indices: idx, news: nw }) {
@@ -3018,40 +4059,72 @@ async function handleMarketInsight(req, res) {
       .filter((n) => n && n.title)
       .slice(0, 6)
       .map((n) => `- ${String(n.title).trim()}`);
+    const indexSummary = (idx || []).length > 0 
+      ? `- 현재 ${idx.length}개의 지수 데이터가 수집되었습니다.`
+      : "- 지수 데이터를 수집 중입니다.";
     return (
       "## 오늘의 Market Insight\n" +
       "### 상황 요약(지표/헤드라인 기반)\n" +
-      "- GPT 호출이 불안정해 간단 요약으로 대체합니다.\n\n" +
+      indexSummary + "\n" +
+      (topNews.length > 0 ? `- ${topNews.length}개의 주요 뉴스가 확인되었습니다.` : "- 뉴스 데이터를 수집 중입니다.") + "\n\n" +
       "### 주요 이슈(헤드라인 기반)\n" +
-      (topNews.length ? topNews.join("\n") : "- (뉴스 없음)") +
+      (topNews.length ? topNews.join("\n") : "- 뉴스 데이터가 아직 수집되지 않았습니다. 잠시 후 새로고침해주세요.") +
       "\n\n" +
       "### 오늘의 관찰 포인트(체크리스트)\n" +
-      "- 주가지수/채권수익률/달러/원자재의 방향성이 ‘정렬’되는지, ‘엇갈리는지’\n" +
+      "- 주가지수/채권수익률/달러/원자재의 방향성이 '정렬'되는지, '엇갈리는지'\n" +
       "- 헤드라인 키워드가 정책/물가/성장/실적/AI/지정학 중 어디로 쏠리는지\n" +
       "- 변동성 확대 신호가 있는지\n\n" +
-      "---\n본 서비스는 투자 판단을 하지 않습니다."
+      "---\n본 서비스는 AI 기반 투자 판단 및 조언을 제공합니다. 최종 투자 결정은 사용자 본인의 책임입니다."
     );
   }
 
   try {
+    console.log("[Market Insight] GPT 호출 시작");
     let insight = await callOpenAI([
       { role: "system", content: system },
       { role: "user", content: input }
     ]);
 
+    console.log("[Market Insight] GPT 호출 완료, 결과 검증 중");
+    const insightStr = String(insight || "").trim();
+    console.log("[Market Insight] 추출된 insight 길이:", insightStr.length);
+    console.log("[Market Insight] 추출된 insight 미리보기:", insightStr.slice(0, 300));
+
     let mode = "openai";
-    if (!String(insight || "").trim()) {
+    if (!insightStr || insightStr.length === 0) {
+      console.warn("[Market Insight] 빈 응답 - fallback 모드로 전환");
       mode = "fallback";
       insight = buildFallbackInsight({ indices: compactIndices, news: compactNews });
     } else {
-      insight = String(insight || "").trim() + "\n\n---\n본 서비스는 투자 판단을 하지 않습니다.";
+      insight = insightStr + "\n\n---\n본 서비스는 AI 기반 투자 판단 및 조언을 제공합니다. 최종 투자 결정은 사용자 본인의 책임입니다.";
+      console.log("[Market Insight] 성공 - OpenAI 모드로 반환");
     }
 
     const out = { ok: true, mode, model: OPENAI_MODEL, asOf: new Date().toISOString(), insight };
     globalThis.__insightCache = { ts: now, data: out };
+    console.log("[Market Insight] 최종 응답 생성 완료:", { mode, insightLength: insight.length });
     return sendJson(res, 200, out);
   } catch (e) {
     // 실패해도 UI가 깨지지 않도록 200 + fallback으로 반환
+    console.error("[Market Insight] 전체 에러 객체:", {
+      name: e?.name,
+      message: e?.message,
+      stack: e?.stack,
+      status: e?.status,
+      statusText: e?.statusText,
+      details: e?.details,
+      errorText: e?.errorText,
+      cause: e?.cause,
+      toString: String(e)
+    });
+    console.error("[Market Insight] 에러 상세:", JSON.stringify({
+      message: e?.message,
+      status: e?.status,
+      statusText: e?.statusText,
+      details: e?.details?.slice(0, 500),
+      errorText: e?.errorText?.slice(0, 500)
+    }, null, 2));
+    
     const out = {
       ok: true,
       mode: "fallback",
@@ -3059,6 +4132,8 @@ async function handleMarketInsight(req, res) {
       asOf: new Date().toISOString(),
       error: "Market insight failed",
       details: String(e?.details || e?.message || e),
+      errorStatus: e?.status,
+      errorStatusText: e?.statusText,
       insight: buildFallbackInsight({ indices: compactIndices, news: compactNews })
     };
     globalThis.__insightCache = { ts: now, data: out };
@@ -3401,7 +4476,7 @@ async function handleResearch(req, res) {
           { role: "user", content: input }
         ],
         temperature: 0.2,
-        max_tokens: 900
+        max_completion_tokens: 900
       })
     });
 
@@ -3623,7 +4698,7 @@ async function handlePortfolioAnalysisStream(req, res) {
       answer = await callModel(usedModel);
     } catch (e) {
       // fallback to a known-small model if primary fails
-      usedModel = "gpt-4.1-mini";
+      usedModel = "gpt-5-mini";
       answer = await callModel(usedModel);
     }
     if (!answer) {
@@ -3670,6 +4745,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/explain_stream") return await handleExplainStream(req, res);
     if (url.pathname === "/api/explain") return await handleExplain(req, res);
     if (url.pathname === "/api/research") return await handleResearch(req, res);
+    if (url.pathname === "/api/sec/filings") return await handleSecFilings(req, res);
     return await serveStatic(req, res);
   } catch (e) {
     // SSE 등으로 이미 헤더를 보낸 경우에는 JSON으로 다시 응답하지 않는다.

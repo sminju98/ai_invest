@@ -953,6 +953,43 @@ async function gptExplain({ symbol, interval, view, question, yahooOhlcv, yahooS
   return extractAssistantTextFromChatCompletions(data);
 }
 
+// 단순 질문용 간단한 설명 생성 (재시도 없음, 짧은 응답)
+async function gptSimpleExplain(question) {
+  const system = "당신은 금융 용어와 개념을 간단하고 명확하게 설명하는 보조자입니다. 사용자의 질문에 대해 2-3문단으로 간결하게 답변하세요. 숫자나 투자 조언은 포함하지 마세요.";
+  
+  const user = `질문: ${question}\n\n위 질문에 대해 간단하고 명확하게 설명해주세요.`;
+
+  try {
+    const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini", // 빠른 mini 모델 사용
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user }
+        ],
+        temperature: 0.3,
+        max_completion_tokens: 200 // 짧은 응답
+      })
+    });
+
+    if (!resp.ok) {
+      const t = await resp.text().catch(() => "");
+      throw new Error(`GPT simple explain failed: ${resp.status} ${t.slice(0, 500)}`);
+    }
+    
+    const data = await resp.json();
+    return extractAssistantTextFromChatCompletions(data);
+  } catch (e) {
+    // 실패 시 간단한 폴백 메시지
+    return `"${question}"에 대한 간단한 설명을 제공하려고 했지만 오류가 발생했습니다. 더 구체적으로 질문해주시면 도와드리겠습니다.`;
+  }
+}
+
 async function gptVerifier({ draft }) {
   const system = [
     "당신은 출력 검증기입니다. 아래 텍스트가 정책을 위반하는지 검사합니다.",
@@ -2878,12 +2915,29 @@ async function handleChatStream(req, res) {
   const ohlcv = clampStr(payload.ohlcv || "", 200_000);
   const screener = clampStr(payload.screener || "", 200_000);
   const consensus = clampStr(payload.consensus || "", 12_000);
+  const directAnswer = payload.directAnswer === true; // 단순 질문 플래그
 
   sendSseHeaders(res);
   try {
     sseEvent(res, { event: "status", data: { stage: "start" } });
 
-    // 1) 자료 수집(Perplexity)
+    // directAnswer가 true이면 단순 질문이므로 검증 단계 건너뛰고 바로 응답
+    if (directAnswer) {
+      sseEvent(res, { event: "status", data: { stage: "explain" } });
+      
+      // 단순 질문용 간단한 설명 생성 (재시도 없음, 짧은 응답)
+      const draft = await gptSimpleExplain(question);
+      
+      const disclaimer = "\n\n---\n본 서비스는 금융 데이터를 제공하거나 투자 판단을 하지 않으며, 공개 웹 정보를 탐색·요약하는 도구입니다.\n";
+      const finalText = `${draft}${disclaimer}`;
+      
+      sseEvent(res, { event: "final", data: { answer: finalText, grounding: { sources: [] } } });
+      sseEvent(res, { event: "done", data: {} });
+      res.end();
+      return;
+    }
+
+    // 1) 자료 수집(Perplexity) - directAnswer가 false일 때만
     sseEvent(res, { event: "status", data: { stage: "grounding" } });
     let grounding = { topics: [], sources: [], notes: "" };
     try {
@@ -4568,6 +4622,7 @@ export async function handleRequest(req, res) {
     if (url.pathname === "/api/explain_stream") return await handleExplainStream(req, res);
     if (url.pathname === "/api/explain") return await handleExplain(req, res);
     if (url.pathname === "/api/research") return await handleResearch(req, res);
+    if (url.pathname === "/api/rule_routing") return await handleRuleBasedRouting(req, res);
     return sendJson(res, 404, { error: "Not found" });
   } catch (e) {
     // SSE 등으로 이미 헤더를 보낸 경우에는 JSON으로 다시 응답하지 않는다.
@@ -4583,4 +4638,384 @@ export async function handleRequest(req, res) {
   }
 }
 
+// ============================================================================
+// Rule-based Intent Routing Engine
+// LLM을 최소화하고 룰 기반으로 의도를 판단하는 시스템
+// ============================================================================
+
+// 종목 추출: Firestore ticker_master에서 종목 검색
+async function extractStockFromText(text, db) {
+  if (!text || !text.trim() || !db) return null;
+  
+  const normalizeKey = (s) => String(s || "").trim().toLowerCase().replace(/\s+/g, "");
+  const words = text.split(/\s+/).filter(w => w.length > 0);
+  
+  // 1) TradingView 형식 직접 매칭 (예: NASDAQ:AAPL)
+  const tvMatch = text.match(/([A-Z]{2,10}:[A-Z0-9.\-^=_]{1,32})/i);
+  if (tvMatch) {
+    const tvSymbol = tvMatch[1];
+    const parts = tvSymbol.split(":");
+    if (parts.length === 2) {
+      return {
+        stockSymbol: parts[1].toUpperCase(),
+        stockName: null
+      };
+    }
+  }
+  
+  // 2) 직접 티커 형식 (예: AAPL)
+  const tickerMatch = text.match(/\b([A-Z]{1,5})\b/);
+  if (tickerMatch && tickerMatch[1].length >= 1 && tickerMatch[1].length <= 5) {
+    const ticker = tickerMatch[1].toUpperCase();
+    try {
+      const snap = await db.collection("ticker_master").where("symbol", "==", ticker).limit(1).get();
+      if (!snap.empty) {
+        const doc = snap.docs[0].data();
+        return {
+          stockSymbol: ticker,
+          stockName: doc.name_ko || doc.name_en || null
+        };
+      }
+    } catch (e) {
+      console.warn("[extractStock] Firestore 조회 실패:", e);
+    }
+  }
+  
+  // 3) Firestore keys 배열 검색 (한글/영문/별칭 모두 포함)
+  for (const word of words) {
+    const q = normalizeKey(word);
+    if (q.length < 2) continue;
+    
+    try {
+      // 정확 매칭
+      const snap = await db.collection("ticker_master").where("keys", "array-contains", q).limit(3).get();
+      if (!snap.empty) {
+        const doc = snap.docs[0].data();
+        return {
+          stockSymbol: String(doc.symbol || "").trim().toUpperCase(),
+          stockName: doc.name_ko || doc.name_en || null
+        };
+      }
+      
+      // prefix 검색 (fallback)
+      const prefixSnap = await db.collection("ticker_master")
+        .where("prefixes", "array-contains", q.slice(0, Math.min(10, q.length)))
+        .limit(5)
+        .get();
+      
+      if (!prefixSnap.empty) {
+        const doc = prefixSnap.docs[0].data();
+        return {
+          stockSymbol: String(doc.symbol || "").trim().toUpperCase(),
+          stockName: doc.name_ko || doc.name_en || null
+        };
+      }
+    } catch (e) {
+      console.warn("[extractStock] Firestore 검색 실패:", e);
+    }
+  }
+  
+  return null;
+}
+
+// 키워드 기반 Page 판단
+function detectPageFromKeywords(text) {
+  const lower = text.toLowerCase();
+  
+  // 차트 관련
+  const chartKeywords = ["차트", "지지선", "저항선", "추세선", "rsi", "이동평균", "캔들", "봉", "차트 보여줘", "차트 보기"];
+  if (chartKeywords.some(kw => lower.includes(kw))) return "CHART";
+  
+  // 뉴스 관련
+  const newsKeywords = ["뉴스", "기사", "이슈", "뉴스 보여줘"];
+  if (newsKeywords.some(kw => lower.includes(kw))) return "NEWS";
+  
+  // 공시/실적
+  const filingKeywords = ["공시", "실적", "발표", "10-k", "10-q", "8-k", "공시 보여줘"];
+  if (filingKeywords.some(kw => lower.includes(kw))) return "FILING";
+  
+  // 시장
+  const marketKeywords = ["시장", "오늘 장", "나스닥", "코스피", "지수", "매크로", "시장 상황"];
+  if (marketKeywords.some(kw => lower.includes(kw))) return "MARKET_INSIGHT";
+  
+  // 비교
+  const compareKeywords = ["비교", "차이", "vs", "versus", "비교해줘"];
+  if (compareKeywords.some(kw => lower.includes(kw))) return "COMPARE";
+  
+  // 종목홈 (주가, 현재가 등)
+  const stockHomeKeywords = ["주가", "가격", "현재가", "주가 알려줘", "가격 알려줘"];
+  if (stockHomeKeywords.some(kw => lower.includes(kw))) return "STOCK_HOME";
+  
+  return "CURRENT_PAGE";
+}
+
+// Action 판단 (명령형 키워드)
+function detectActionsFromKeywords(text) {
+  const lower = text.toLowerCase();
+  const actions = [];
+  
+  // 보여줘/그려줘 → DRAW_*
+  if (lower.includes("보여줘") || lower.includes("그려줘") || lower.includes("보여") || lower.includes("그려")) {
+    if (lower.includes("지지선") || lower.includes("지지")) {
+      actions.push("DRAW_SUPPORT_RESISTANCE");
+    }
+    if (lower.includes("저항선") || lower.includes("저항")) {
+      actions.push("DRAW_SUPPORT_RESISTANCE");
+    }
+    if (lower.includes("추세선") || lower.includes("추세")) {
+      actions.push("DRAW_TRENDLINE");
+    }
+  }
+  
+  // 확대/줄여
+  if (lower.includes("확대") || lower.includes("줄여") || lower.includes("줌")) {
+    actions.push("ZOOM_CHART");
+  }
+  
+  // 추가해
+  if (lower.includes("추가") || lower.includes("인디케이터")) {
+    actions.push("ADD_INDICATOR");
+  }
+  
+  // 불러와/알려줘 → FETCH_*
+  if (lower.includes("불러와") || lower.includes("알려줘") || lower.includes("가져와")) {
+    if (lower.includes("뉴스")) {
+      actions.push("FETCH_LATEST_NEWS");
+    }
+    if (lower.includes("공시") || lower.includes("실적")) {
+      actions.push("FETCH_FILING");
+    }
+  }
+  
+  // 재계산
+  if (lower.includes("재계산") || lower.includes("다시 계산")) {
+    actions.push("RECOMPUTE_INSIGHT");
+  }
+  
+  // 비교
+  if (lower.includes("비교")) {
+    actions.push("COMPARE_STOCKS");
+  }
+  
+  return actions.length > 0 ? actions : ["NONE"];
+}
+
+// Response Strategy 판단
+function detectResponseStrategy(text) {
+  const lower = text.toLowerCase();
+  
+  // 이유/설명 요청
+  if (lower.includes("왜") || lower.includes("이유") || lower.includes("설명") || lower.includes("어떻게")) {
+    return "EXPLAIN_AFTER_ACTION";
+  }
+  
+  // 정보 부족 (애매한 질문)
+  if (text.trim().length < 5 || !text.match(/[가-힣a-zA-Z]/)) {
+    return "ASK_CLARIFICATION";
+  }
+  
+  // 일반 대화
+  if (lower.includes("안녕") || lower.includes("고마워") || lower.includes("감사")) {
+    return "SMALL_TALK";
+  }
+  
+  return "EXPLAIN_AFTER_ACTION";
+}
+
+// Confidence 계산
+function calculateConfidence(stockFound, pageMatched, actionMatched) {
+  let confidence = 0.0;
+  
+  if (stockFound) confidence += 0.4;
+  if (pageMatched) confidence += 0.3;
+  if (actionMatched) confidence += 0.3;
+  
+  return Math.min(confidence, 1.0);
+}
+
+// Rule-based Intent Routing (1단계)
+async function ruleBasedIntentRouting(userMessage, db) {
+  const text = String(userMessage || "").trim();
+  
+  // A. 종목 추출
+  const stock = await extractStockFromText(text, db);
+  const pageFromKeywords = detectPageFromKeywords(text);
+  const scope = stock ? "STOCK" : (pageFromKeywords === "MARKET_INSIGHT" ? "MARKET" : "GENERAL");
+  
+  // B. Page 판단
+  const page = pageFromKeywords;
+  const pageMatched = page !== "CURRENT_PAGE";
+  
+  // C. Action 판단
+  const actions = detectActionsFromKeywords(text);
+  const actionMatched = !actions.includes("NONE") || actions.length > 1;
+  
+  // D. Response Strategy
+  const responseStrategy = detectResponseStrategy(text);
+  
+  // E. Confidence 계산
+  const confidence = calculateConfidence(!!stock, pageMatched, actionMatched);
+  
+  return {
+    scope,
+    target: {
+      stockSymbol: stock?.stockSymbol || null,
+      stockName: stock?.stockName || null
+    },
+    page,
+    actions,
+    responseStrategy,
+    confidence,
+    source: "RULE"
+  };
+}
+
+// Mini LLM Fallback (2단계, 선택적)
+async function llmFallbackIntentRouting(userMessage, ruleResult) {
+  const systemPrompt = `사용자 입력을 분석해 라우팅 정보만 반환하라.
+
+입력: "${userMessage}"
+
+현재 룰 기반 판단 결과:
+- scope: ${ruleResult.scope}
+- page: ${ruleResult.page}
+- actions: ${ruleResult.actions.join(", ")}
+- confidence: ${ruleResult.confidence}
+
+이 판단을 보정하거나 개선하라. JSON만 출력하라.`;
+
+  const userPrompt = `{
+  "scope": "STOCK | MARKET | GENERAL",
+  "target": {
+    "stockSymbol": "AAPL | null",
+    "stockName": "Apple | null"
+  },
+  "page": "STOCK_HOME | CHART | NEWS | FILING | MARKET_INSIGHT | COMPARE | HELP | CURRENT_PAGE",
+  "actions": ["DRAW_SUPPORT_RESISTANCE | FETCH_LATEST_NEWS | NONE"],
+  "responseStrategy": "EXPLAIN_ONLY | EXPLAIN_AFTER_ACTION | ASK_CLARIFICATION | SMALL_TALK",
+  "confidence": 0.0
+}`;
+
+  try {
+    const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ],
+        temperature: 0.2,
+        response_format: { type: "json_object" },
+        max_tokens: 300
+      })
+    });
+
+    if (!resp.ok) {
+      throw new Error(`LLM fallback failed: ${resp.status}`);
+    }
+
+    const data = await resp.json();
+    const content = data.choices?.[0]?.message?.content || "{}";
+    const llmResult = JSON.parse(content);
+    
+    // 룰 결과와 병합 (LLM이 null이 아닌 값만 사용)
+    return {
+      scope: llmResult.scope || ruleResult.scope,
+      target: {
+        stockSymbol: llmResult.target?.stockSymbol || ruleResult.target.stockSymbol,
+        stockName: llmResult.target?.stockName || ruleResult.target.stockName
+      },
+      page: llmResult.page || ruleResult.page,
+      actions: Array.isArray(llmResult.actions) && llmResult.actions.length > 0 ? llmResult.actions : ruleResult.actions,
+      responseStrategy: llmResult.responseStrategy || ruleResult.responseStrategy,
+      confidence: Math.max(Number(llmResult.confidence) || 0, ruleResult.confidence),
+      source: "LLM"
+    };
+  } catch (e) {
+    console.warn("[LLM Fallback] 실패, 룰 결과 반환:", e);
+    return ruleResult; // 실패 시 룰 결과 반환
+  }
+}
+
+// Rule-based Intent Routing API
+async function handleRuleBasedRouting(req, res) {
+  if (req.method !== "POST") return sendJson(res, 405, { error: "Method Not Allowed" });
+
+  let payload;
+  try {
+    const raw = await readRequestBody(req);
+    payload = raw ? JSON.parse(raw) : {};
+  } catch {
+    return sendJson(res, 400, { error: "Invalid JSON" });
+  }
+
+  const userMessage = clampStr(payload.userMessage || "", 500);
+  if (!userMessage.trim()) {
+    return sendJson(res, 400, { error: "userMessage is required" });
+  }
+
+  try {
+    // Firestore DB 초기화 (Firebase Functions 환경)
+    let db = null;
+    try {
+      const admin = await import("firebase-admin");
+      if (!admin.apps.length) {
+        admin.initializeApp();
+      }
+      db = admin.firestore();
+    } catch (e) {
+      console.warn("[Rule Routing] Firestore 초기화 실패, DB 없이 진행:", e);
+    }
+
+    // 1단계: Rule-based Parsing
+    const ruleResult = await ruleBasedIntentRouting(userMessage, db);
+    
+    // 2단계: Confidence < 0.8이면 LLM Fallback
+    let finalResult = ruleResult;
+    if (ruleResult.confidence < 0.8) {
+      console.log(`[Rule Routing] Confidence ${ruleResult.confidence} < 0.8, LLM fallback 실행`);
+      finalResult = await llmFallbackIntentRouting(userMessage, ruleResult);
+    } else {
+      console.log(`[Rule Routing] Confidence ${ruleResult.confidence} >= 0.8, 룰 결과 사용`);
+    }
+
+    // 최종 검증 및 정규화
+    const validScopes = ["STOCK", "MARKET", "GENERAL"];
+    const validPages = ["STOCK_HOME", "CHART", "NEWS", "FILING", "MARKET_INSIGHT", "COMPARE", "HELP", "CURRENT_PAGE"];
+    const validActions = ["NONE", "DRAW_SUPPORT_RESISTANCE", "DRAW_TRENDLINE", "ZOOM_CHART", "ADD_INDICATOR", 
+                          "FETCH_LATEST_NEWS", "FETCH_FILING", "RECOMPUTE_INSIGHT", "COMPARE_STOCKS"];
+    const validStrategies = ["EXPLAIN_ONLY", "EXPLAIN_AFTER_ACTION", "ASK_CLARIFICATION", "SMALL_TALK"];
+
+    finalResult.scope = validScopes.includes(finalResult.scope) ? finalResult.scope : "GENERAL";
+    finalResult.page = validPages.includes(finalResult.page) ? finalResult.page : "CURRENT_PAGE";
+    finalResult.actions = Array.isArray(finalResult.actions) 
+      ? finalResult.actions.filter(a => validActions.includes(a))
+      : ["NONE"];
+    if (finalResult.actions.length === 0) finalResult.actions = ["NONE"];
+    finalResult.responseStrategy = validStrategies.includes(finalResult.responseStrategy) 
+      ? finalResult.responseStrategy 
+      : "EXPLAIN_AFTER_ACTION";
+    finalResult.confidence = Math.max(0, Math.min(1, Number(finalResult.confidence) || 0));
+
+    return sendJson(res, 200, finalResult);
+  } catch (e) {
+    console.error("[Rule Routing] 오류:", e);
+    return sendJson(res, 500, { 
+      error: "Rule routing failed", 
+      details: String(e?.message || e),
+      scope: "GENERAL",
+      target: { stockSymbol: null, stockName: null },
+      page: "CURRENT_PAGE",
+      actions: ["NONE"],
+      responseStrategy: "ASK_CLARIFICATION",
+      confidence: 0.0,
+      source: "ERROR"
+    });
+  }
+}
 

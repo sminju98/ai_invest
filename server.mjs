@@ -928,29 +928,114 @@ async function gptExplain({ symbol, interval, view, question, yahooOhlcv, yahooS
     "주의: 최종 출력에 숫자/퍼센트/가격/목표가/EPS를 포함하지 마세요."
   ].join("\n");
 
-  const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${OPENAI_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: OPENAI_MODEL,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user }
-      ],
-      temperature: 0.4,
-      max_completion_tokens: 900
-    })
-  });
+  // 재시도 로직 (최대 3회, 502/503/504 오류 시)
+  const maxRetries = 3;
+  const retryableStatuses = [502, 503, 504, 429]; // Bad Gateway, Service Unavailable, Gateway Timeout, Rate Limit
+  let lastError = null;
 
-  if (!resp.ok) {
-    const t = await resp.text().catch(() => "");
-    throw new Error(`GPT explain failed: ${resp.status} ${t.slice(0, 500)}`);
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // 타임아웃 설정 (60초)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+      const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${OPENAI_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: OPENAI_MODEL,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: user }
+          ],
+          temperature: 0.4,
+          max_completion_tokens: 900
+        }),
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!resp.ok) {
+        const t = await resp.text().catch(() => "");
+        const errorMsg = `GPT explain failed: ${resp.status} ${t.slice(0, 500)}`;
+        
+        // 재시도 가능한 오류인지 확인
+        if (retryableStatuses.includes(resp.status) && attempt < maxRetries) {
+          const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000); // 지수 백오프 (최대 5초)
+          console.warn(`[gptExplain] 재시도 ${attempt}/${maxRetries}: ${resp.status} 오류, ${delay}ms 후 재시도`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          lastError = new Error(errorMsg);
+          continue;
+        }
+        
+        throw new Error(errorMsg);
+      }
+
+      const data = await resp.json();
+      return extractAssistantTextFromChatCompletions(data);
+    } catch (e) {
+      // AbortError (타임아웃) 또는 네트워크 오류
+      if (e.name === "AbortError" || (e.message && e.message.includes("fetch"))) {
+        if (attempt < maxRetries) {
+          const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000);
+          console.warn(`[gptExplain] 재시도 ${attempt}/${maxRetries}: 타임아웃/네트워크 오류, ${delay}ms 후 재시도`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          lastError = e;
+          continue;
+        }
+      }
+      
+      // 마지막 시도이거나 재시도 불가능한 오류
+      if (attempt === maxRetries) {
+        throw lastError || e;
+      }
+      
+      lastError = e;
+    }
   }
-  const data = await resp.json();
-  return extractAssistantTextFromChatCompletions(data);
+
+  throw lastError || new Error("GPT explain failed after all retries");
+}
+
+// 단순 질문용 간단한 설명 생성 (재시도 없음, 짧은 응답)
+async function gptSimpleExplain(question) {
+  const system = "당신은 금융 용어와 개념을 간단하고 명확하게 설명하는 보조자입니다. 사용자의 질문에 대해 2-3문단으로 간결하게 답변하세요. 숫자나 투자 조언은 포함하지 마세요.";
+  
+  const user = `질문: ${question}\n\n위 질문에 대해 간단하고 명확하게 설명해주세요.`;
+
+  try {
+    const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini", // 빠른 mini 모델 사용
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user }
+        ],
+        temperature: 0.3,
+        max_completion_tokens: 200 // 짧은 응답
+      })
+    });
+
+    if (!resp.ok) {
+      const t = await resp.text().catch(() => "");
+      throw new Error(`GPT simple explain failed: ${resp.status} ${t.slice(0, 500)}`);
+    }
+    
+    const data = await resp.json();
+    return extractAssistantTextFromChatCompletions(data);
+  } catch (e) {
+    // 실패 시 간단한 폴백 메시지
+    return `"${question}"에 대한 간단한 설명을 제공하려고 했지만 오류가 발생했습니다. 더 구체적으로 질문해주시면 도와드리겠습니다.`;
+  }
 }
 
 async function gptVerifier({ draft }) {
@@ -3056,10 +3141,27 @@ async function handleChatStream(req, res) {
   const ohlcv = clampStr(payload.ohlcv || "", 200_000);
   const screener = clampStr(payload.screener || "", 200_000);
   const consensus = clampStr(payload.consensus || "", 12_000);
+  const directAnswer = payload.directAnswer === true; // 단순 질문 플래그
 
   sendSseHeaders(res);
   try {
     sseEvent(res, { event: "status", data: { stage: "start" } });
+
+    // directAnswer가 true이면 단순 질문이므로 검증 단계 건너뛰고 바로 응답
+    if (directAnswer) {
+      sseEvent(res, { event: "status", data: { stage: "explain" } });
+      
+      // 단순 질문용 간단한 설명 생성 (재시도 없음, 짧은 응답)
+      const draft = await gptSimpleExplain(question);
+      
+      const disclaimer = "\n\n---\n본 서비스는 금융 데이터를 제공하거나 투자 판단을 하지 않으며, 공개 웹 정보를 탐색·요약하는 도구입니다.\n";
+      const finalText = `${draft}${disclaimer}`;
+      
+      sseEvent(res, { event: "final", data: { answer: finalText, grounding: { sources: [] } } });
+      sseEvent(res, { event: "done", data: {} });
+      res.end();
+      return;
+    }
 
     // 1) 자료 수집(Perplexity)
     sseEvent(res, { event: "status", data: { stage: "grounding" } });
@@ -3078,16 +3180,28 @@ async function handleChatStream(req, res) {
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       sseEvent(res, { event: "status", data: { stage: "explain", attempt } });
-      draft = await gptExplain({
-        symbol,
-        interval,
-        view,
-        question,
-        yahooOhlcv: ohlcv,
-        yahooScreener: screener,
-        yahooConsensus: consensus,
-        grounding
-      });
+      try {
+        draft = await gptExplain({
+          symbol,
+          interval,
+          view,
+          question,
+          yahooOhlcv: ohlcv,
+          yahooScreener: screener,
+          yahooConsensus: consensus,
+          grounding
+        });
+      } catch (e) {
+        // gptExplain에서 재시도 후에도 실패한 경우
+        if (attempt === maxAttempts) {
+          sseEvent(res, { event: "error", data: { error: "chat_stream_failed", details: String(e?.message || e) } });
+          sseEvent(res, { event: "done", data: {} });
+          return res.end();
+        }
+        // 다음 시도로 계속
+        draft = "";
+        continue;
+      }
 
       sseEvent(res, { event: "status", data: { stage: "verify", attempt } });
 
@@ -4716,6 +4830,490 @@ async function handlePortfolioAnalysisStream(req, res) {
   }
 }
 
+// 빠른 라우팅 API (Mini 모델 사용)
+async function handleFastRouting(req, res) {
+  if (req.method !== "POST") return sendJson(res, 405, { error: "Method Not Allowed" });
+
+  let payload;
+  try {
+    const raw = await readRequestBody(req);
+    payload = raw ? JSON.parse(raw) : {};
+  } catch {
+    return sendJson(res, 400, { error: "Invalid JSON" });
+  }
+
+  const userMessage = clampStr(payload.userMessage || "", 500);
+  if (!userMessage.trim()) {
+    return sendJson(res, 400, { error: "userMessage is required" });
+  }
+
+  try {
+    // 빠른 라우팅 프롬프트 (간단하고 빠르게)
+    const systemPrompt = `사용자 입력을 분석해 빠르게 라우팅 정보만 반환하라.
+
+가능한 페이지:
+- STOCK_HOME: 종목홈 (주가, 기본 정보)
+- CHART: 차트
+- COMPANY: 기업분석
+- NEWS: 뉴스
+- SCREENER: 스크리너
+- MACRO: 매크로
+- AI_ANALYSIS: AI 종합 분석 (매우 신중하게 선택)
+
+종목명/티커를 추출하라 (한글/영어/티커 모두 인식).
+
+JSON 형식:
+{
+  "page": "STOCK_HOME | CHART | COMPANY | NEWS | SCREENER | MACRO | AI_ANALYSIS | CURRENT_PAGE",
+  "ticker": "AAPL | null",
+  "skipChat": true | false,
+  "directAnswer": true | false
+}
+
+라우팅 규칙:
+1. 단순 질문 (시의성 없음, GPT가 바로 답변 가능):
+   - "차트가 뭐야?", "지지선이 뭐야?", "RSI란?", "주식이 뭐야?" 같은 개념 질문
+   - "어떻게 사용해?", "도움말", "설명해줘" 같은 사용법 질문
+   → page = CURRENT_PAGE, directAnswer = true, skipChat = false
+   → 탭 변경 없이 채팅으로 바로 답변
+
+2. 구체적인 데이터/화면 요청:
+   - "주가 알려줘", "가격", "현재가", "주가 보여줘" → STOCK_HOME, skipChat = true, directAnswer = false
+   - **중요: "주가 알려줘" 같은 질문은 반드시 skipChat = true로 설정하라. 채팅 응답 없이 종목홈만 보여주면 된다.**
+   - "차트 보여줘", "캔들", "봉" → CHART, skipChat = false
+   - "기업 정보", "재무", "실적" → COMPANY, skipChat = false
+   - "뉴스", "공시" → NEWS, skipChat = false
+   - "스크리너", "스크리닝" → SCREENER, skipChat = false
+   - "시장", "매크로", "지수" → MACRO, skipChat = false
+
+3. AI_ANALYSIS는 매우 엄격하게 선택 (거의 선택하지 마라):
+   - 명시적으로 "종합 분석 화면", "AI 분석 화면", "종합 판단 화면" 요청 시에만
+   - "매수할까", "투자 판단" 같은 질문은 STOCK_HOME 또는 CHART로 라우팅
+   - 일반적인 질문은 절대 AI_ANALYSIS를 선택하지 마라
+
+4. 탭 변경이 불필요한 경우:
+   - 단순 질문/설명 요청
+   - 현재 화면에서 충분히 답변 가능한 질문
+   - 명시적인 화면 이동 요청이 없는 경우
+   → page = CURRENT_PAGE
+
+종목명이 명확하면 ticker를 반드시 채워라.
+JSON만 출력하라.`;
+
+    const userPrompt = `입력: "${userMessage}"`;
+
+    // Mini 모델 사용 (빠른 응답)
+    const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini", // 빠른 mini 모델
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ],
+        temperature: 0.1, // 낮은 temperature로 빠르고 일관된 응답
+        response_format: { type: "json_object" },
+        max_tokens: 150 // 짧은 응답으로 빠른 처리
+      })
+    });
+
+    if (!resp.ok) {
+      const t = await resp.text().catch(() => "");
+      throw new Error(`Fast routing failed: ${resp.status} ${t.slice(0, 500)}`);
+    }
+
+    const data = await resp.json();
+    const content = data.choices?.[0]?.message?.content || "{}";
+    let result;
+    try {
+      result = JSON.parse(content);
+    } catch {
+      result = { page: null, ticker: null, skipChat: false };
+    }
+
+    // 검증 및 정규화
+    const validPages = ["STOCK_HOME", "CHART", "COMPANY", "NEWS", "SCREENER", "MACRO", "AI_ANALYSIS", "CURRENT_PAGE"];
+    const page = validPages.includes(result.page) ? result.page : "CURRENT_PAGE";
+    const ticker = result.ticker ? clampStr(String(result.ticker).toUpperCase().trim(), 20) : null;
+    const skipChat = result.skipChat === true;
+    const directAnswer = result.directAnswer === true;
+
+    return sendJson(res, 200, { page, ticker, skipChat, directAnswer });
+  } catch (e) {
+    return sendJson(res, 500, { error: "Fast routing failed", details: String(e?.message || e) });
+  }
+}
+
+// Intent 분류 API (AI Navigator)
+async function handleNavigateIntent(req, res) {
+  if (req.method !== "POST") return sendJson(res, 405, { error: "Method Not Allowed" });
+
+  let payload;
+  try {
+    const raw = await readRequestBody(req);
+    payload = raw ? JSON.parse(raw) : {};
+  } catch {
+    return sendJson(res, 400, { error: "Invalid JSON" });
+  }
+
+  const userMessage = clampStr(payload.userMessage || "", 500);
+  if (!userMessage.trim()) {
+    return sendJson(res, 400, { error: "userMessage is required" });
+  }
+
+  try {
+    // Intent 분류 프롬프트
+    const systemPrompt = `다음 사용자 입력의 의도를 분류하라.
+아래 enum 중 하나만 선택하라.
+
+VIEW_CHART
+COMPANY_FUNDAMENTAL
+SCREEN_STOCK
+INVEST_DECISION
+MARKET_OVERVIEW
+
+가능하면 종목 티커도 함께 추출하라.
+JSON으로만 응답하라.`;
+
+    const userPrompt = `입력:
+"${userMessage}"`;
+
+    const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini", // 빠른 응답을 위해 mini 모델 사용
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ],
+        temperature: 0.3,
+        response_format: { type: "json_object" },
+        max_tokens: 200
+      })
+    });
+
+    if (!resp.ok) {
+      const t = await resp.text().catch(() => "");
+      throw new Error(`OpenAI API failed: ${resp.status} ${t.slice(0, 500)}`);
+    }
+
+    const data = await resp.json();
+    const content = data.choices?.[0]?.message?.content || "{}";
+    let result;
+    try {
+      result = JSON.parse(content);
+    } catch {
+      // JSON 파싱 실패 시 기본값
+      result = { intent: null, ticker: null };
+    }
+
+    // Intent 검증 및 정규화
+    const validIntents = ["VIEW_CHART", "COMPANY_FUNDAMENTAL", "SCREEN_STOCK", "INVEST_DECISION", "MARKET_OVERVIEW"];
+    const intent = validIntents.includes(result.intent) ? result.intent : null;
+    const ticker = result.ticker ? clampStr(String(result.ticker).toUpperCase().trim(), 20) : null;
+
+    return sendJson(res, 200, { intent, ticker });
+  } catch (e) {
+    return sendJson(res, 500, { error: "Intent classification failed", details: String(e?.message || e) });
+  }
+}
+
+// AI Control Layer API
+async function handleAiControl(req, res) {
+  if (req.method !== "POST") return sendJson(res, 405, { error: "Method Not Allowed" });
+
+  let payload;
+  try {
+    const raw = await readRequestBody(req);
+    payload = raw ? JSON.parse(raw) : {};
+  } catch {
+    return sendJson(res, 400, { error: "Invalid JSON" });
+  }
+
+  const userMessage = clampStr(payload.userMessage || "", 1000);
+  if (!userMessage.trim()) {
+    return sendJson(res, 400, { error: "userMessage is required" });
+  }
+
+  try {
+    // AI Control 프롬프트
+    const systemPrompt = `너는 AI 투자 서비스의 컨트롤러다.
+사용자의 입력을 해석해
+아래 Action Schema에 맞는 JSON만 출력하라.
+
+작업 순서:
+1. 종목(Entity)을 인식한다 - 매우 중요!
+2. 가장 적합한 action과 target을 선택한다
+3. 필요한 params를 채운다
+4. 사용자에게 보여줄 message를 작성한다
+
+가능한 action:
+- NAVIGATE: 화면 이동
+- UPDATE_CHART: 차트 상태 변경
+- FETCH_DATA: 데이터 호출
+- RUN_ANALYSIS: 분석 실행
+
+가능한 target:
+- stock_home: 종목홈
+- chart: 차트
+- company: 기업분석
+- screener: 스크리너
+- macro: 매크로
+- news: 뉴스
+- decision: 종합 판단
+
+JSON 형식:
+{
+  "action": "NAVIGATE | UPDATE_CHART | FETCH_DATA | RUN_ANALYSIS",
+  "target": "stock_home | chart | company | screener | macro | news | decision",
+  "entity": {
+    "companyName": "string",
+    "ticker": "string"
+  } | null,
+  "params": {},
+  "message": "사용자에게 보여줄 한 줄 설명"
+}
+
+종목 인식 규칙 (매우 중요):
+- 한국어 종목명: 애플, 테슬라, 엔비디아, 구글, 마이크로소프트, 아마존, 메타, 넷플릭스 등
+- 한국어 약어: 마소(마이크로소프트), 엔비(엔비디아), 넷플(넷플릭스), 페북(메타) 등
+- 영어 종목명: Apple, Tesla, NVIDIA, Google, Microsoft, Amazon, Meta, Netflix 등
+- 티커 심볼: AAPL, TSLA, NVDA, GOOGL, MSFT, AMZN, META, NFLX 등
+- TradingView 형식: NASDAQ:AAPL, NASDAQ:TSLA 등
+- 사용자 입력에 종목명/티커가 포함되어 있으면 반드시 entity를 채워야 한다
+- 종목이 명확하지 않으면 entity는 null
+
+예시:
+- "애플 차트 보여줘" → entity: {companyName: "Apple Inc", ticker: "AAPL"}
+- "TSLA 보여줘" → entity: {companyName: "Tesla, Inc.", ticker: "TSLA"}
+- "엔비디아 정보" → entity: {companyName: "NVIDIA Corporation", ticker: "NVDA"}
+- "마소 실적" → entity: {companyName: "Microsoft Corporation", ticker: "MSFT"}
+
+JSON 외의 텍스트는 절대 출력하지 마라.`;
+
+    const userPrompt = `사용자 입력:
+"${userMessage}"`;
+
+    const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ],
+        temperature: 0.3,
+        response_format: { type: "json_object" },
+        max_tokens: 500
+      })
+    });
+
+    if (!resp.ok) {
+      const t = await resp.text().catch(() => "");
+      throw new Error(`OpenAI API failed: ${resp.status} ${t.slice(0, 500)}`);
+    }
+
+    const data = await resp.json();
+    const content = data.choices?.[0]?.message?.content || "{}";
+    let result;
+    try {
+      result = JSON.parse(content);
+    } catch {
+      // JSON 파싱 실패 시 기본값
+      result = { action: null, target: null, entity: null, params: {}, message: "요청을 처리할 수 없어요." };
+    }
+
+    // Action 검증 및 정규화
+    const validActions = ["NAVIGATE", "UPDATE_CHART", "FETCH_DATA", "RUN_ANALYSIS"];
+    const validTargets = ["stock_home", "chart", "company", "screener", "macro", "news", "decision"];
+    
+    const action = validActions.includes(result.action) ? result.action : null;
+    const target = validTargets.includes(result.target) ? result.target : null;
+    
+    // Entity 정규화
+    let entity = null;
+    if (result.entity && typeof result.entity === "object") {
+      const ticker = result.entity.ticker ? clampStr(String(result.entity.ticker).toUpperCase().trim(), 20) : null;
+      const companyName = result.entity.companyName ? clampStr(String(result.entity.companyName).trim(), 100) : null;
+      if (ticker || companyName) {
+        entity = { ticker, companyName };
+      }
+    }
+    
+    // Params 정규화
+    const params = typeof result.params === "object" && result.params !== null ? result.params : {};
+    
+    // Message 정규화
+    const message = result.message ? clampStr(String(result.message).trim(), 200) : "요청을 처리할 수 없어요.";
+
+    return sendJson(res, 200, { action, target, entity, params, message });
+  } catch (e) {
+    return sendJson(res, 500, { error: "AI Control failed", details: String(e?.message || e) });
+  }
+}
+
+// Intent Classification & Routing Engine
+async function handleIntentRouting(req, res) {
+  if (req.method !== "POST") return sendJson(res, 405, { error: "Method Not Allowed" });
+
+  let payload;
+  try {
+    const raw = await readRequestBody(req);
+    payload = raw ? JSON.parse(raw) : {};
+  } catch {
+    return sendJson(res, 400, { error: "Invalid JSON" });
+  }
+
+  const userMessage = clampStr(payload.userMessage || "", 1000);
+  if (!userMessage.trim()) {
+    return sendJson(res, 400, { error: "userMessage is required" });
+  }
+
+  try {
+    // Intent Classification & Routing 프롬프트
+    const systemPrompt = `너는 AI 투자 서비스의 Intent Classification & Routing Engine이다.
+사용자의 채팅 입력을 분석해 아래 5가지를 결정하라:
+
+1. Scope (분석 범위): STOCK | MARKET | GENERAL
+2. Target (대상): stockSymbol, stockName
+3. Page/Tab Routing: STOCK_HOME | CHART | NEWS | FILING | MARKET_INSIGHT | COMPARE | HELP | CURRENT_PAGE
+4. Action (기능 실행): NONE | DRAW_SUPPORT_RESISTANCE | DRAW_TRENDLINE | ZOOM_CHART | ADD_INDICATOR | FETCH_LATEST_NEWS | FETCH_FILING | RECOMPUTE_INSIGHT | COMPARE_STOCKS
+5. Response Strategy: EXPLAIN_ONLY | EXPLAIN_AFTER_ACTION | ASK_CLARIFICATION | SMALL_TALK
+
+분류 규칙:
+- "보여줘 / 그려줘 / 확대해줘" → Action 필수
+- 지지선, 저항선, 추세선, RSI, 이동평균 → page = CHART
+- 뉴스, 공시, 실적, 발표 → page = NEWS 또는 FILING
+- "왜", "이유", "설명해줘" → responseStrategy = EXPLAIN_ONLY 또는 EXPLAIN_AFTER_ACTION
+- confidence < 0.6 → responseStrategy = ASK_CLARIFICATION, actions = ["NONE"]
+
+중요:
+- 이 분류기는 분석하거나 판단하지 않는다
+- 투자 조언을 생성하지 않는다
+- 오직 "무엇을 할지"만 결정한다
+- 자연어 해설은 절대 포함하지 않는다
+- JSON만 출력한다
+
+JSON 형식:
+{
+  "scope": "STOCK | MARKET | GENERAL",
+  "target": {
+    "stockSymbol": "AAPL | null",
+    "stockName": "Apple | null"
+  },
+  "page": "STOCK_HOME | CHART | NEWS | FILING | MARKET_INSIGHT | COMPARE | HELP | CURRENT_PAGE",
+  "actions": ["DRAW_SUPPORT_RESISTANCE | FETCH_LATEST_NEWS | NONE | ..."],
+  "responseStrategy": "EXPLAIN_ONLY | EXPLAIN_AFTER_ACTION | ASK_CLARIFICATION | SMALL_TALK",
+  "confidence": 0.0
+}`;
+
+    const userPrompt = `사용자 입력:
+"${userMessage}"`;
+
+    const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ],
+        temperature: 0.2,
+        response_format: { type: "json_object" },
+        max_tokens: 500
+      })
+    });
+
+    if (!resp.ok) {
+      const t = await resp.text().catch(() => "");
+      throw new Error(`OpenAI API failed: ${resp.status} ${t.slice(0, 500)}`);
+    }
+
+    const data = await resp.json();
+    const content = data.choices?.[0]?.message?.content || "{}";
+    let result;
+    try {
+      result = JSON.parse(content);
+    } catch {
+      // JSON 파싱 실패 시 기본값
+      result = {
+        scope: "GENERAL",
+        target: { stockSymbol: null, stockName: null },
+        page: "CURRENT_PAGE",
+        actions: ["NONE"],
+        responseStrategy: "ASK_CLARIFICATION",
+        confidence: 0.0
+      };
+    }
+
+    // 검증 및 정규화
+    const validScopes = ["STOCK", "MARKET", "GENERAL"];
+    const validPages = ["STOCK_HOME", "CHART", "NEWS", "FILING", "MARKET_INSIGHT", "COMPARE", "HELP", "CURRENT_PAGE"];
+    const validActions = ["NONE", "DRAW_SUPPORT_RESISTANCE", "DRAW_TRENDLINE", "ZOOM_CHART", "ADD_INDICATOR", "FETCH_LATEST_NEWS", "FETCH_FILING", "RECOMPUTE_INSIGHT", "COMPARE_STOCKS"];
+    const validStrategies = ["EXPLAIN_ONLY", "EXPLAIN_AFTER_ACTION", "ASK_CLARIFICATION", "SMALL_TALK"];
+
+    const scope = validScopes.includes(result.scope) ? result.scope : "GENERAL";
+    const page = validPages.includes(result.page) ? result.page : "CURRENT_PAGE";
+    
+    // Actions 정규화
+    let actions = [];
+    if (Array.isArray(result.actions)) {
+      actions = result.actions.filter(a => validActions.includes(a));
+    } else if (result.actions && validActions.includes(result.actions)) {
+      actions = [result.actions];
+    }
+    if (actions.length === 0) actions = ["NONE"];
+
+    const responseStrategy = validStrategies.includes(result.responseStrategy) ? result.responseStrategy : "ASK_CLARIFICATION";
+    
+    // Target 정규화
+    const target = {
+      stockSymbol: result.target?.stockSymbol ? clampStr(String(result.target.stockSymbol).toUpperCase().trim(), 20) : null,
+      stockName: result.target?.stockName ? clampStr(String(result.target.stockName).trim(), 100) : null
+    };
+
+    // Confidence 정규화
+    let confidence = typeof result.confidence === "number" ? Math.max(0, Math.min(1, result.confidence)) : 0.5;
+    
+    // Confidence가 낮으면 자동 조정
+    if (confidence < 0.6) {
+      if (responseStrategy !== "ASK_CLARIFICATION") {
+        // responseStrategy를 ASK_CLARIFICATION으로 변경하지 않고, actions만 NONE으로
+        if (!actions.includes("NONE")) {
+          actions = ["NONE"];
+        }
+      }
+    }
+
+    return sendJson(res, 200, {
+      scope,
+      target,
+      page,
+      actions,
+      responseStrategy,
+      confidence
+    });
+  } catch (e) {
+    return sendJson(res, 500, { error: "Intent routing failed", details: String(e?.message || e) });
+  }
+}
+
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -4734,6 +5332,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/yahoo/quotes") return await handleYahooQuotes(req, res);
     if (url.pathname === "/api/yahoo/news") return await handleYahooNews(req, res);
     if (url.pathname === "/api/yahoo/symbol_search") return await handleYahooSymbolSearch(req, res);
+    if (url.pathname === "/api/sec/filings") return await handleSecFilings(req, res);
     if (url.pathname === "/api/market_insight") return await handleMarketInsight(req, res);
     if (url.pathname === "/api/order_simulate") return await handleOrderSimulate(req, res);
     if (url.pathname === "/api/chat_stream") return await handleChatStream(req, res);
@@ -4746,6 +5345,10 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/explain") return await handleExplain(req, res);
     if (url.pathname === "/api/research") return await handleResearch(req, res);
     if (url.pathname === "/api/sec/filings") return await handleSecFilings(req, res);
+    if (url.pathname === "/api/navigate_intent") return await handleNavigateIntent(req, res);
+    if (url.pathname === "/api/ai_control") return await handleAiControl(req, res);
+    if (url.pathname === "/api/intent_routing") return await handleIntentRouting(req, res);
+    if (url.pathname === "/api/fast_routing") return await handleFastRouting(req, res);
     return await serveStatic(req, res);
   } catch (e) {
     // SSE 등으로 이미 헤더를 보낸 경우에는 JSON으로 다시 응답하지 않는다.

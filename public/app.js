@@ -2263,7 +2263,7 @@ function startYahooAutoPoll(seconds) {
 }
 
 function setLeftView(view, reason) {
-  const v = view === "company" ? "company" : view === "macro" ? "macro" : view === "screener" ? "screener" : view === "aiAnalysis" ? "aiAnalysis" : "chart";
+  const v = view === "company" ? "company" : view === "macro" ? "macro" : view === "screener" ? "screener" : view === "aiAnalysis" ? "aiAnalysis" : view === "stockHome" ? "stockHome" : "chart";
   if (leftView === v) return;
   leftView = v;
 
@@ -2272,33 +2272,38 @@ function setLeftView(view, reason) {
   const btnMacro = $("viewMacro");
   const btnScreener = $("viewScreener");
   const btnAiAnalysis = $("viewAiAnalysis");
+  const btnStockHome = $("viewStockHome");
   
-  if (btnChart && btnScreener && btnCompany && btnMacro && btnAiAnalysis) {
+  if (btnChart && btnScreener && btnCompany && btnMacro && btnAiAnalysis && btnStockHome) {
     const isChart = v === "chart";
     const isCompany = v === "company";
     const isMacro = v === "macro";
     const isScreener = v === "screener";
     const isAiAnalysis = v === "aiAnalysis";
+    const isStockHome = v === "stockHome";
     
     btnChart.classList.toggle("is-active", isChart);
     btnCompany.classList.toggle("is-active", isCompany);
     btnMacro.classList.toggle("is-active", isMacro);
     btnScreener.classList.toggle("is-active", isScreener);
     btnAiAnalysis.classList.toggle("is-active", isAiAnalysis);
+    btnStockHome.classList.toggle("is-active", isStockHome);
     
     btnChart.setAttribute("aria-selected", String(isChart));
     btnCompany.setAttribute("aria-selected", String(isCompany));
     btnMacro.setAttribute("aria-selected", String(isMacro));
     btnScreener.setAttribute("aria-selected", String(isScreener));
     btnAiAnalysis.setAttribute("aria-selected", String(isAiAnalysis));
+    btnStockHome.setAttribute("aria-selected", String(isStockHome));
   } else {
-    console.warn("탭 버튼을 찾을 수 없습니다:", { btnChart, btnCompany, btnMacro, btnScreener, btnAiAnalysis });
+    console.warn("탭 버튼을 찾을 수 없습니다:", { btnChart, btnCompany, btnMacro, btnScreener, btnAiAnalysis, btnStockHome });
   }
 
   if (v === "chart") mountTradingViewChart();
   else if (v === "company") mountTradingViewCompany();
   else if (v === "macro") mountMacro();
   else if (v === "aiAnalysis") mountAiAnalysis();
+  else if (v === "stockHome") mountStockHome();
   else mountTradingViewScreener();
   updateCalendarToggleUI();
   updateLeftControlsUI();
@@ -2346,7 +2351,7 @@ function setLeftView(view, reason) {
   }
 
   if (reason) {
-    const label = v === "chart" ? "차트" : v === "company" ? "기업분석" : v === "macro" ? "매크로" : v === "aiAnalysis" ? "AI 종합 분석" : "스크리너";
+    const label = v === "chart" ? "차트" : v === "company" ? "기업분석" : v === "macro" ? "매크로" : v === "aiAnalysis" ? "AI 종합 분석" : v === "stockHome" ? "종목홈" : "스크리너";
     addMessage("system", `왼쪽 화면을 '${label}'로 전환했습니다. (${reason})`);
   }
 }
@@ -2945,6 +2950,293 @@ function mountMacro() {
   $("insightRefresh")?.addEventListener("click", () => loadMarketInsight({ force: true }));
   loadMacro();
   loadMarketInsight();
+}
+
+// 종목홈 더미 데이터
+function getStockHomeDummyData(ticker = "AAPL") {
+  return {
+    companyName: ticker === "AAPL" ? "Apple Inc." : ticker === "TSLA" ? "Tesla, Inc." : "Company Name",
+    ticker: ticker,
+    price: 175.43,
+    changeRate: 2.34,
+    aiStatus: "positive",
+    aiSummary: "최근 실적 발표에서 예상을 상회하는 성장세를 보였으며, 시장 기대치를 충족하고 있습니다.",
+    chartData: [],
+    fundamentalsSummary: {
+      profitability: "수익성이 안정적으로 유지되고 있으며, 영업이익률이 업계 평균을 상회합니다.",
+      stability: "재무 건전성이 양호하며, 부채 비율이 적정 수준을 유지하고 있습니다.",
+      growth: "매출 성장률이 지속적으로 개선되고 있으며, 신규 사업 영역에서도 성과를 보이고 있습니다."
+    },
+    recentIssues: [
+      { title: "2024년 4분기 실적 발표", sentiment: "positive" },
+      { title: "신제품 출시 발표", sentiment: "neutral" },
+      { title: "주주환원 정책 확대", sentiment: "positive" }
+    ],
+    updatedAt: new Date().toLocaleString("ko-KR")
+  };
+}
+
+// 종목홈 컴포넌트: 헤더
+function renderStockHomeHeader(data) {
+  return `
+    <div class="stockHome__header">
+      <div class="stockHome__headerTop">
+        <div class="stockHome__companyName">${escapeHtml(data.companyName)}</div>
+        <div class="stockHome__ticker">${escapeHtml(data.ticker)}</div>
+      </div>
+    </div>
+  `;
+}
+
+// 종목홈 컴포넌트: AI 상태 카드
+function renderStockHomeAiStatus(data) {
+  const statusConfig = {
+    positive: { label: "긍정", class: "stockHome__status--positive", icon: "✓" },
+    neutral: { label: "중립", class: "stockHome__status--neutral", icon: "○" },
+    caution: { label: "주의", class: "stockHome__status--caution", icon: "⚠" }
+  };
+  const config = statusConfig[data.aiStatus] || statusConfig.neutral;
+  
+  return `
+    <div class="stockHome__card stockHome__card--aiStatus">
+      <div class="stockHome__cardHead">
+        <div class="stockHome__cardTitle">AI 종합 상태</div>
+        <div class="stockHome__status ${config.class}">
+          <span class="stockHome__statusIcon">${config.icon}</span>
+          <span class="stockHome__statusLabel">${config.label}</span>
+        </div>
+      </div>
+      <div class="stockHome__cardBody">
+        <div class="stockHome__summary">${escapeHtml(data.aiSummary)}</div>
+        <div class="stockHome__updated">업데이트: ${escapeHtml(data.updatedAt)}</div>
+      </div>
+    </div>
+  `;
+}
+
+// 종목홈 컴포넌트: 차트 스냅샷 (헤더 바로 아래 배치)
+function renderStockHomeChart(data) {
+  // 티커를 Yahoo 심볼 형식으로 변환
+  const ticker = data.ticker || "AAPL";
+  const yahooSymbol = ticker.includes(":") ? ticker : `NASDAQ:${ticker}`;
+  
+  return `
+    <div class="stockHome__chartContainer" id="stockHomeChartContainer">
+      <tv-mini-chart symbol="${escapeHtml(yahooSymbol)}"></tv-mini-chart>
+    </div>
+  `;
+}
+
+// 종목홈 컴포넌트: 기업 상태 요약
+function renderStockHomeFundamentals(data) {
+  return `
+    <div class="stockHome__card stockHome__card--fundamentals">
+      <div class="stockHome__cardHead">
+        <div class="stockHome__cardTitle">기업 상태 요약</div>
+      </div>
+      <div class="stockHome__cardBody">
+        <div class="stockHome__fundamentalsGrid">
+          <div class="stockHome__fundamentalItem">
+            <div class="stockHome__fundamentalLabel">수익성</div>
+            <div class="stockHome__fundamentalText">${escapeHtml(data.fundamentalsSummary.profitability)}</div>
+          </div>
+          <div class="stockHome__fundamentalItem">
+            <div class="stockHome__fundamentalLabel">안정성</div>
+            <div class="stockHome__fundamentalText">${escapeHtml(data.fundamentalsSummary.stability)}</div>
+          </div>
+          <div class="stockHome__fundamentalItem">
+            <div class="stockHome__fundamentalLabel">성장성</div>
+            <div class="stockHome__fundamentalText">${escapeHtml(data.fundamentalsSummary.growth)}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// 종목홈 컴포넌트: 뉴스/공시 상태
+function renderStockHomeIssues(data) {
+  const news = Array.isArray(data.news) ? data.news : [];
+  const filings = Array.isArray(data.filings) ? data.filings : [];
+  
+  // 뉴스 항목 생성
+  const newsHtml = news.slice(0, 5).map(item => {
+    const title = item.title || item.headline || "";
+    const link = item.link || item.url || "";
+    let dateStr = "";
+    if (item.publishTime) {
+      // Unix timestamp (초 단위)
+      dateStr = new Date(item.publishTime * 1000).toLocaleDateString("ko-KR");
+    } else if (item.providerPublishTime) {
+      // Unix timestamp (초 단위)
+      dateStr = new Date(item.providerPublishTime * 1000).toLocaleDateString("ko-KR");
+    }
+    return `
+      <div class="stockHome__issueItem">
+        <div class="stockHome__issueType">뉴스</div>
+        <div style="flex: 1;">
+          <div class="stockHome__issueTitle">
+            ${link ? `<a href="${escapeHtml(link)}" target="_blank" rel="noopener">${escapeHtml(title)}</a>` : escapeHtml(title)}
+          </div>
+          ${dateStr ? `<div class="stockHome__issueDate">${dateStr}</div>` : ""}
+        </div>
+      </div>
+    `;
+  }).join("");
+  
+  // 공시 항목 생성
+  const filingsHtml = filings.slice(0, 5).map(item => {
+    const form = item.form || "";
+    const filingDate = item.filingDate || "";
+    const description = item.description || "";
+    let dateStr = "";
+    if (filingDate) {
+      // YYYY-MM-DD 형식
+      dateStr = new Date(filingDate).toLocaleDateString("ko-KR");
+    }
+    const title = description || `${form} 공시`;
+    return `
+      <div class="stockHome__issueItem">
+        <div class="stockHome__issueType stockHome__issueType--filing">공시</div>
+        <div style="flex: 1;">
+          <div class="stockHome__issueTitle">${escapeHtml(title)}</div>
+          ${dateStr ? `<div class="stockHome__issueDate">${dateStr}</div>` : ""}
+        </div>
+      </div>
+    `;
+  }).join("");
+  
+  const allIssuesHtml = newsHtml + filingsHtml;
+  
+  if (!allIssuesHtml) {
+    return `
+      <div class="stockHome__card stockHome__card--issues">
+        <div class="stockHome__cardHead">
+          <div class="stockHome__cardTitle">최근 이슈</div>
+        </div>
+        <div class="stockHome__cardBody">
+          <div class="stockHome__issuesList">
+            <div style="padding: 20px; text-align: center; color: var(--muted);">최근 뉴스나 공시가 없습니다.</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+  
+  return `
+    <div class="stockHome__card stockHome__card--issues">
+      <div class="stockHome__cardHead">
+        <div class="stockHome__cardTitle">최근 이슈</div>
+      </div>
+      <div class="stockHome__cardBody">
+        <div class="stockHome__issuesList">
+          ${allIssuesHtml}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// 종목홈 메인 함수
+async function mountStockHome() {
+  const root = $("leftWidgetRoot");
+  if (!root) return;
+
+  const symbol = $("symbol").value.trim() || "NASDAQ:AAPL";
+  const ticker = symbol.includes(":") ? symbol.split(":")[1] : symbol;
+  
+  // 로딩 표시
+  root.innerHTML = `
+    <div class="stockHome">
+      <div style="padding: 20px; text-align: center;">시세를 불러오는 중...</div>
+    </div>
+  `;
+
+  try {
+    // 실제 API에서 시세 가져오기
+    const qs = new URLSearchParams({ symbols: ticker });
+    const resp = await fetch(`/api/yahoo/quotes?${qs.toString()}`);
+    const data = await resp.json().catch(() => ({}));
+    
+    if (!resp.ok || !data?.ok) {
+      throw new Error(data?.error || resp.statusText || "quotes error");
+    }
+    
+    const quotes = Array.isArray(data?.quotes) ? data.quotes : [];
+    const quote = quotes[0] || {};
+    
+    // 더미 데이터를 기반으로 시세 데이터 병합
+    const stockData = getStockHomeDummyData(ticker);
+    
+    // 실제 시세 데이터로 업데이트
+    if (quote.regularMarketPrice != null) {
+      stockData.price = quote.regularMarketPrice;
+    }
+    if (quote.regularMarketChangePercent != null) {
+      stockData.changeRate = quote.regularMarketChangePercent;
+    }
+    if (quote.shortName) {
+      stockData.companyName = quote.shortName;
+    }
+    stockData.ticker = ticker;
+    stockData.updatedAt = new Date().toLocaleString("ko-KR");
+
+    // 뉴스와 공시 데이터 가져오기
+    let news = [];
+    let filings = [];
+    
+    try {
+      // 뉴스 가져오기
+      const newsResp = await fetch(`/api/yahoo/news?q=${encodeURIComponent(ticker)}&count=5`);
+      if (newsResp.ok) {
+        const newsData = await newsResp.json().catch(() => ({}));
+        if (newsData?.ok && Array.isArray(newsData.news)) {
+          news = newsData.news;
+        }
+      }
+    } catch (e) {
+      console.warn("[종목홈] 뉴스 로딩 실패:", e);
+    }
+    
+    try {
+      // 공시 가져오기
+      const filingsResp = await fetch(`/api/sec/filings?symbol=${encodeURIComponent(ticker)}`);
+      if (filingsResp.ok) {
+        const filingsData = await filingsResp.json().catch(() => ({}));
+        if (filingsData?.ok && filingsData.filings && Array.isArray(filingsData.filings)) {
+          filings = filingsData.filings;
+        }
+      }
+    } catch (e) {
+      console.warn("[종목홈] 공시 로딩 실패:", e);
+    }
+    
+    stockData.news = news;
+    stockData.filings = filings;
+
+    root.innerHTML = `
+      <div class="stockHome">
+        ${renderStockHomeHeader(stockData)}
+        ${renderStockHomeChart(stockData)}
+        ${renderStockHomeAiStatus(stockData)}
+        ${renderStockHomeFundamentals(stockData)}
+        ${renderStockHomeIssues(stockData)}
+      </div>
+    `;
+  } catch (e) {
+    console.error("[종목홈] 시세 로딩 실패:", e);
+    // 에러 시 더미 데이터로 표시
+    const stockData = getStockHomeDummyData(ticker);
+    root.innerHTML = `
+      <div class="stockHome">
+        ${renderStockHomeHeader(stockData)}
+        ${renderStockHomeChart(stockData)}
+        ${renderStockHomeAiStatus(stockData)}
+        ${renderStockHomeFundamentals(stockData)}
+        ${renderStockHomeIssues(stockData)}
+      </div>
+    `;
+  }
 }
 
 let aiAnalysisAbortController = null;
@@ -3680,17 +3972,272 @@ async function startAiAnalysis() {
   }
 }
 
+// 채팅 입력에서 종목명/티커 감지 및 심볼 자동 업데이트
+async function detectAndUpdateTickerFromQuestion(question) {
+  if (!question || !question.trim()) return null;
+
+  const text = String(question).trim();
+  
+  // 1) TradingView 형식 직접 매칭 (예: NASDAQ:AAPL)
+  const tvMatch = text.match(/([A-Z]{2,10}:[A-Z0-9.\-^=_]{1,32})/i);
+  if (tvMatch) {
+    const tvSymbol = tvMatch[1];
+    const parts = tvSymbol.split(":");
+    if (parts.length === 2) {
+      const ticker = parts[1].toUpperCase();
+      const exchange = parts[0].toUpperCase();
+      const yahooSymbol = `${exchange}:${ticker}`;
+      $("symbol").value = yahooSymbol;
+      return ticker;
+    }
+  }
+
+  // 2) 티커 직접 매칭 (예: AAPL, TSLA)
+  const tickerMatch = text.match(/\b([A-Z]{1,5})\b/);
+  if (tickerMatch) {
+    const candidate = tickerMatch[1].toUpperCase();
+    // 일반 단어 제외
+    const excludeWords = new Set(["BUY", "SELL", "MARKET", "LIMIT", "USD", "KRW", "D", "W", "M", "THE", "AND", "OR", "FOR", "TO", "OF", "IN", "ON", "AT"]);
+    if (!excludeWords.has(candidate) && /^[A-Z]{1,5}$/.test(candidate)) {
+      // 주요 티커인지 확인
+      const majorTicker = resolveMajorTickerFromToken(candidate);
+      if (majorTicker && majorTicker !== candidate) {
+        // 한글/영문명에서 티커로 변환된 경우
+        const yahooSymbol = `NASDAQ:${majorTicker}`;
+        $("symbol").value = yahooSymbol;
+        return majorTicker;
+      } else if (majorTicker === candidate) {
+        // 직접 티커인 경우
+        const yahooSymbol = `NASDAQ:${candidate}`;
+        $("symbol").value = yahooSymbol;
+        return candidate;
+      }
+    }
+  }
+
+  // 3) 한글/영문 종목명 감지 (예: 애플, Apple, 테슬라, Tesla)
+  const words = Array.from(text.matchAll(/([A-Za-z가-힣]{2,})/g)).map(m => String(m[1] || "").trim()).filter(Boolean);
+  const stopWords = new Set([
+    "오늘", "지금", "방금", "주식", "종목", "티커", "매수", "매도", "주문", "보여줘", "보여", "알려줘", "알려",
+    "차트", "차트를", "정보", "정보를", "실적", "실적을", "뉴스", "뉴스를", "분석", "분석을",
+    "show", "tell", "give", "me", "the", "chart", "info", "news", "analysis", "about", "for"
+  ]);
+
+  for (const word of words) {
+    if (stopWords.has(word.toLowerCase())) continue;
+    
+    // 한글 약어 매핑 확인
+    const resolvedTicker = resolveMajorTickerFromToken(word);
+    if (resolvedTicker && resolvedTicker !== word) {
+      const yahooSymbol = `NASDAQ:${resolvedTicker}`;
+      $("symbol").value = yahooSymbol;
+      return resolvedTicker;
+    }
+  }
+
+  // 4) Firestore에서 종목명 검색 (비동기, 선택적)
+  if (firebaseReady() && firebaseSignedIn()) {
+    try {
+      for (const word of words) {
+        if (stopWords.has(word.toLowerCase())) continue;
+        if (word.length < 2) continue;
+        
+        const normalized = word.trim().toLowerCase().replace(/\s+/g, "");
+        const snap = await fbState.db.collection("ticker_master")
+          .where("keys", "array-contains", normalized)
+          .limit(1)
+          .get();
+        
+        if (!snap.empty) {
+          const doc = snap.docs[0];
+          const data = doc.data();
+          const ticker = String(data?.symbol || "").trim().toUpperCase();
+          if (ticker) {
+            const yahooSymbol = `NASDAQ:${ticker}`;
+            $("symbol").value = yahooSymbol;
+            return ticker;
+          }
+        }
+      }
+    } catch (e) {
+      // Firestore 검색 실패 시 무시
+      console.warn("종목명 Firestore 검색 실패:", e);
+    }
+  }
+
+  return null;
+}
+
 async function askExplain() {
-  const symbol = $("symbol").value.trim() || "NASDAQ:AAPL";
+  let symbol = $("symbol").value.trim() || "NASDAQ:AAPL";
   const interval = $("interval").value || "D";
   const question = $("question").value || "";
   const ohlcv = latestOhlcvText || "";
   let screener = "";
   let consensus = "";
+  let routingData = null; // 빠른 라우팅 결과 저장
 
   if (!question.trim()) {
     addMessage("system", "질문/요청을 입력해 주세요.", "error");
     return;
+  }
+
+  // 1차: 빠른 라우팅 (Mini 모델로 즉시 의도 파악)
+  try {
+    const fastRoutingResp = await fetch("/api/fast_routing", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userMessage: question })
+    });
+
+    if (fastRoutingResp.ok) {
+      routingData = await fastRoutingResp.json();
+      const { page, ticker, skipChat, directAnswer } = routingData || {};
+
+      // 티커가 있으면 심볼 업데이트
+      if (ticker) {
+        const yahooSymbol = ticker.includes(":") ? ticker : `NASDAQ:${ticker}`;
+        $("symbol").value = yahooSymbol;
+        symbol = yahooSymbol;
+        console.log(`[빠른 라우팅] 종목 감지: ${ticker} → ${yahooSymbol}`);
+      }
+
+      // directAnswer가 true이면 단순 질문 → 탭 변경 없이 채팅으로 바로 답변
+      if (directAnswer) {
+        console.log(`[빠른 라우팅] 단순 질문 감지: ${question} → 채팅으로 바로 답변`);
+        // 탭 변경 없이 채팅 로직 계속 진행
+        // skipChat 체크는 하지 않고 채팅 응답 생성
+      } else {
+        // 페이지 라우팅 (탭 변경이 필요한 경우만)
+        if (page && page !== "CURRENT_PAGE") {
+          const pageMap = {
+            "STOCK_HOME": "stockHome",
+            "CHART": "chart",
+            "COMPANY": "company",
+            "NEWS": "macro", // 뉴스는 매크로 화면에 포함
+            "SCREENER": "screener",
+            "MACRO": "macro",
+            "AI_ANALYSIS": "aiAnalysis"
+          };
+          const view = pageMap[page];
+          if (view) {
+            setLeftView(view, "빠른 라우팅");
+            console.log(`[빠른 라우팅] 화면 이동: ${page} → ${view}`);
+            
+            // AI_ANALYSIS는 화면만 이동 (자동 실행하지 않음)
+            if (page === "AI_ANALYSIS") {
+              console.log(`[빠른 라우팅] 종합분석 화면으로 이동 (자동 실행 안 함)`);
+              addMessage("assistant", "종합 분석 화면으로 이동했습니다. '종합 판단' 버튼을 클릭하면 분석을 시작합니다.");
+              return; // 채팅 로직 건너뛰기
+            }
+          }
+        }
+
+        // skipChat이 true이면 채팅 로직 건너뛰기 (예: "주가 알려줘" → 종목홈만 보여주면 됨)
+        if (skipChat) {
+          console.log(`[빠른 라우팅] 채팅 스킵: ${question}`);
+          return; // 채팅 응답 없이 종료
+        }
+      }
+    }
+  } catch (e) {
+    // 빠른 라우팅 실패 시 기존 로직으로 진행
+    console.warn("빠른 라우팅 실패:", e);
+  }
+
+  // 채팅 입력에서 종목명/티커 자동 감지 및 심볼 업데이트 (폴백)
+  const detectedTicker = await detectAndUpdateTickerFromQuestion(question);
+  if (detectedTicker) {
+    symbol = $("symbol").value.trim(); // 업데이트된 심볼 사용
+    console.log(`종목명 감지: ${detectedTicker} → ${symbol}`);
+  }
+
+  // AI Control Layer: Action 기반 제어
+  try {
+    const controlResp = await fetch("/api/ai_control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userMessage: question })
+    });
+
+    if (controlResp.ok) {
+      const actionData = await controlResp.json();
+      const executed = await executeAiAction(actionData);
+      if (executed) {
+        // Action이 성공적으로 실행되었으면 기존 채팅 로직은 건너뛰기
+        return;
+      }
+    }
+  } catch (e) {
+    // AI Control 실패 시 기존 로직으로 폴백
+    console.warn("AI Control 실패:", e);
+  }
+
+  // 기존 AI Navigator: Intent 분류 및 화면 라우팅 (폴백)
+  try {
+    const intentResp = await fetch("/api/navigate_intent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userMessage: question })
+    });
+
+    if (intentResp.ok) {
+      const intentData = await intentResp.json();
+      const intent = intentData.intent;
+      const ticker = intentData.ticker;
+
+      // Intent에 따라 화면 전환 및 메시지 표시
+      if (intent === "VIEW_CHART") {
+        setLeftView("chart", "AI Navigator");
+        if (ticker) {
+          const yahooSymbol = ticker.includes(":") ? ticker : `NASDAQ:${ticker}`;
+          $("symbol").value = yahooSymbol;
+          addMessage("assistant", `차트를 보면서 설명할게요. (${ticker})`);
+        } else {
+          addMessage("assistant", "차트를 보면서 설명할게요.");
+        }
+      } else if (intent === "COMPANY_FUNDAMENTAL") {
+        setLeftView("company", "AI Navigator");
+        if (ticker) {
+          const yahooSymbol = ticker.includes(":") ? ticker : `NASDAQ:${ticker}`;
+          $("symbol").value = yahooSymbol;
+          addMessage("assistant", `기업 실적부터 볼게요. (${ticker})`);
+        } else {
+          addMessage("assistant", "기업 실적부터 볼게요.");
+        }
+      } else if (intent === "SCREEN_STOCK") {
+        setLeftView("screener", "AI Navigator");
+        addMessage("assistant", "스크리너 화면으로 이동할게요.");
+      } else if (intent === "INVEST_DECISION") {
+        // INVEST_DECISION은 화면만 이동 (자동 실행 안 함)
+        setLeftView("aiAnalysis", "AI Navigator");
+        if (ticker) {
+          const yahooSymbol = ticker.includes(":") ? ticker : `NASDAQ:${ticker}`;
+          $("symbol").value = yahooSymbol;
+          addMessage("assistant", `종합 분석 화면으로 이동했습니다. (${ticker}) '종합 판단' 버튼을 클릭하면 분석을 시작합니다.`);
+        } else {
+          addMessage("assistant", "종합 분석 화면으로 이동했습니다. '종합 판단' 버튼을 클릭하면 분석을 시작합니다.");
+        }
+      } else if (intent === "MARKET_OVERVIEW") {
+        setLeftView("macro", "AI Navigator");
+        addMessage("assistant", "시장 개요 화면으로 이동할게요.");
+      } else {
+        // Intent 분류 실패 시
+        addMessage("assistant", "어떤 분석을 볼지 알려주세요.");
+      }
+
+      // ticker가 있으면 symbol 업데이트
+      if (ticker && intent !== null) {
+        const currentSymbol = $("symbol").value.trim();
+        if (!currentSymbol || currentSymbol === "NASDAQ:AAPL") {
+          const yahooSymbol = ticker.includes(":") ? ticker : `NASDAQ:${ticker}`;
+          $("symbol").value = yahooSymbol;
+        }
+      }
+    }
+  } catch (e) {
+    // Intent 분류 실패 시 무시하고 기존 로직 진행
+    console.warn("Intent 분류 실패:", e);
   }
 
   function looksLikeKisTemplate(t) {
@@ -3836,11 +4383,14 @@ async function askExplain() {
   }
 
   try {
+    // directAnswer 플래그 확인 (빠른 라우팅에서 설정됨)
+    const isDirectAnswer = routingData?.directAnswer === true;
+    
     // 모든 질문은 검증자 파이프라인(/api/chat_stream)을 통해 응답
     const resp = await fetch("/api/chat_stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ symbol, interval, view: leftView, question, ohlcv, screener, consensus })
+      body: JSON.stringify({ symbol, interval, view: leftView, question, ohlcv, screener, consensus, directAnswer: isDirectAnswer })
     });
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
@@ -3909,6 +4459,168 @@ async function askExplain() {
   } finally {
     btn.disabled = false;
     btn.textContent = "전송";
+  }
+}
+
+// AI Control Layer: Action 실행 함수
+async function executeAiAction(actionData) {
+  const { action, target, entity, params, message } = actionData || {};
+  
+  // Action이 없으면 실행하지 않음
+  if (!action) {
+    console.warn("AI Control: action이 없습니다.", actionData);
+    return false;
+  }
+
+  // Message 출력 (Action 실행 전)
+  if (message) {
+    addMessage("assistant", message);
+  }
+
+  try {
+    // Entity가 있으면 종목 컨텍스트 업데이트
+    if (entity && entity.ticker) {
+      const ticker = entity.ticker;
+      const yahooSymbol = ticker.includes(":") ? ticker : `NASDAQ:${ticker}`;
+      $("symbol").value = yahooSymbol;
+    }
+
+    // Action에 따라 실행
+    switch (action) {
+      case "NAVIGATE":
+        return await executeNavigateAction(target, entity, params);
+      
+      case "UPDATE_CHART":
+        return await executeUpdateChartAction(target, entity, params);
+      
+      case "FETCH_DATA":
+        return await executeFetchDataAction(target, entity, params);
+      
+      case "RUN_ANALYSIS":
+        return await executeRunAnalysisAction(target, entity, params);
+      
+      default:
+        console.warn("AI Control: 알 수 없는 action:", action);
+        addMessage("system", "요청을 처리할 수 없어요.", "error");
+        return false;
+    }
+  } catch (e) {
+    console.error("AI Control 실행 실패:", e);
+    addMessage("system", `요청 처리 중 오류가 발생했습니다: ${e?.message || e}`, "error");
+    return false;
+  }
+}
+
+// NAVIGATE Action 실행
+async function executeNavigateAction(target, entity, params) {
+  const targetMap = {
+    "stock_home": "stockHome",
+    "chart": "chart",
+    "company": "company",
+    "screener": "screener",
+    "macro": "macro",
+    "news": "macro", // 뉴스는 매크로 화면에 포함
+    "decision": "aiAnalysis"
+  };
+
+  const view = targetMap[target];
+  if (!view) {
+    console.warn("AI Control: 알 수 없는 target:", target);
+    addMessage("system", "이동할 화면을 찾을 수 없어요.", "error");
+    return false;
+  }
+
+  setLeftView(view, "AI Control");
+  return true;
+}
+
+// UPDATE_CHART Action 실행
+async function executeUpdateChartAction(target, entity, params) {
+  // 차트 화면으로 이동
+  setLeftView("chart", "AI Control");
+  
+  // 차트 상태 업데이트 (params 기반)
+  if (params.period) {
+    // 기간 설정 (예: "6M" -> interval 변경)
+    const periodMap = {
+      "1M": "D",
+      "3M": "D",
+      "6M": "W",
+      "1Y": "W",
+      "2Y": "M"
+    };
+    const interval = periodMap[params.period] || $("interval").value || "D";
+    $("interval").value = interval;
+  }
+
+  // 차트 재로딩
+  if (typeof mountTradingViewChart === "function") {
+    mountTradingViewChart();
+  }
+
+  // 지표/선 표시는 placeholder (실제 구현 시 TradingView 위젯 설정)
+  if (params.indicators || params.draw) {
+    console.log("AI Control: 차트 지표/선 설정 (placeholder):", { indicators: params.indicators, draw: params.draw });
+    addMessage("system", "차트 지표와 선 표시 기능은 준비 중입니다.", "info");
+  }
+
+  return true;
+}
+
+// FETCH_DATA Action 실행
+async function executeFetchDataAction(target, entity, params) {
+  try {
+    if (target === "news") {
+      // 뉴스 데이터 호출
+      if (entity && entity.ticker) {
+        // 특정 종목 뉴스
+        addMessage("system", `${entity.ticker} 관련 뉴스를 불러오는 중입니다...`, "info");
+        // TODO: 실제 뉴스 API 호출
+        // await fetchNewsForTicker(entity.ticker, params.range);
+      } else {
+        // 일반 뉴스 (매크로 화면)
+        setLeftView("macro", "AI Control");
+        if (typeof loadMacro === "function") {
+          await loadMacro();
+        }
+      }
+    } else if (target === "company") {
+      // 기업 데이터 호출
+      setLeftView("company", "AI Control");
+      if (typeof mountTradingViewCompany === "function") {
+        mountTradingViewCompany();
+      }
+    } else {
+      // 기타 데이터 호출
+      addMessage("system", `${target} 데이터를 불러오는 중입니다...`, "info");
+    }
+    return true;
+  } catch (e) {
+    console.error("FETCH_DATA 실행 실패:", e);
+    addMessage("system", "데이터를 불러오는 중 오류가 발생했습니다.", "error");
+    return false;
+  }
+}
+
+// RUN_ANALYSIS Action 실행
+async function executeRunAnalysisAction(target, entity, params) {
+  if (target === "decision") {
+    // 종합 판단 화면으로만 이동 (자동 실행 안 함)
+    if (!entity || !entity.ticker) {
+      addMessage("system", "어떤 종목을 분석할까요?", "error");
+      return false;
+    }
+
+    // 종합 판단 화면으로 이동
+    setLeftView("aiAnalysis", "AI Control");
+    
+    // 자동 실행하지 않고 안내만
+    addMessage("assistant", `${entity.ticker} 종합 분석 화면으로 이동했습니다. '종합 판단' 버튼을 클릭하면 분석을 시작합니다.`);
+    return true;
+  } else {
+    console.warn("AI Control: 알 수 없는 분석 target:", target);
+    addMessage("system", "분석을 실행할 수 없어요.", "error");
+    return false;
   }
 }
 
@@ -4128,6 +4840,7 @@ function init() {
     else if (leftView === "company") mountTradingViewCompany();
     else if (leftView === "macro") mountMacro();
     else if (leftView === "aiAnalysis") mountAiAnalysis();
+    else if (leftView === "stockHome") mountStockHome();
     else mountTradingViewChart();
     addMessage("system", "왼쪽 화면을 새로고침했어요.");
   });
@@ -4137,12 +4850,14 @@ function init() {
   const viewMacroBtn = $("viewMacro");
   const viewScreenerBtn = $("viewScreener");
   const viewAiAnalysisBtn = $("viewAiAnalysis");
+  const viewStockHomeBtn = $("viewStockHome");
   
   if (viewChartBtn) viewChartBtn.addEventListener("click", () => setLeftView("chart"));
   if (viewCompanyBtn) viewCompanyBtn.addEventListener("click", () => setLeftView("company"));
   if (viewMacroBtn) viewMacroBtn.addEventListener("click", () => setLeftView("macro"));
   if (viewScreenerBtn) viewScreenerBtn.addEventListener("click", () => setLeftView("screener"));
   if (viewAiAnalysisBtn) viewAiAnalysisBtn.addEventListener("click", () => setLeftView("aiAnalysis"));
+  if (viewStockHomeBtn) viewStockHomeBtn.addEventListener("click", () => setLeftView("stockHome"));
   $("toggleCalendar")?.addEventListener("click", () => {
     if (leftView !== "screener") return;
     calendarCollapsed = !calendarCollapsed;
